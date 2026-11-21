@@ -1,0 +1,12 @@
+node_modules/
+out/
+release/
+.env*
+*.log
+build/distribution.json
+*.fhplugin
+*.gguf
+*.blockmap
+*.pfx
+*.p12
+*-ed25519.pem

@@ -1,0 +1,23 @@
+{
+  "id": "quick-search",
+  "api": 2,
+  "name": "快速搜索",
+  "icon": "folder-search",
+  "compactPage": "search",
+  "pages": [
+    { "id": "search", "title": "搜索", "view": "search" },
+    {
+      "id": "settings",
+      "title": "设置",
+      "view": "settings",
+      "collections": [{ "id": "saved-apps", "title": "已添加应用", "view": "saved-applications" }],
+      "services": [
+        {
+          "id": "everything",
+          "title": "Everything 1.4",
+          "actions": ["enable", "disable", "remove", "check", "cancel", "open"]
+        }
+      ]
+    }
+  ]
+}

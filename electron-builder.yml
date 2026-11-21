@@ -1,0 +1,17 @@
+appId: com.fasthelper.desktop
+productName: fasthelper
+directories:
+  output: release
+files:
+  - out/**/*
+  - build/icon.png
+  - build/distribution.json
+  - LICENSE
+  - package.json
+win:
+  target: nsis
+  icon: build/icon.png
+nsis:
+  oneClick: true
+  perMachine: false
+  artifactName: fasthelper-${version}-win-${arch}.${ext}

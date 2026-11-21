@@ -1,0 +1,42 @@
+{
+  "name": "fasthelper",
+  "version": "0.5.0",
+  "private": true,
+  "license": "MIT",
+  "description": "A local-first Windows assistant",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "npm run build:plugin && electron-vite dev",
+    "start": "electron-vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "node --experimental-transform-types --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/core.test.ts",
+    "test:desktop": "node tests/desktop.mjs",
+    "build:plugin": "node scripts/package-quick-search.mjs",
+    "build": "npm run typecheck && npm run build:plugin && electron-vite build",
+    "package:win": "npm run build && node scripts/package-windows.mjs",
+    "upgrade:local": "npm run package:win && node scripts/upgrade-local.mjs"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "dependencies": {
+    "@headlessui/vue": "1.7.23",
+    "@lucide/vue": "1.77.0",
+    "electron-updater": "6.8.12",
+    "pinia": "3.0.4",
+    "vue": "3.5.46",
+    "vue-router": "4.6.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@vitejs/plugin-vue": "6.0.11",
+    "electron": "45.4.1",
+    "electron-builder": "26.18.0",
+    "electron-vite": "6.0.0",
+    "esbuild": "0.28.2",
+    "playwright-core": "1.65.1",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.0",
+    "vue-tsc": "3.3.14"
+  }
+}
