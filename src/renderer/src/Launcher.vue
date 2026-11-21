@@ -1,32 +1,33 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
-import { ArrowRight, Settings2, X } from '@lucide/vue'
-import Brand from './Brand.vue'
-import SearchPanel from './SearchPanel.vue'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { Settings2, X } from '@lucide/vue'
+import Conversation from './Conversation.vue'
 import { useSettings } from './store'
 
 const store = useSettings()
 const api = window.fasthelper
-const plugin = computed(() => store.snapshot?.plugins.find((entry) =>
-  entry.compactPage && store.snapshot?.features[entry.id] === 'enabled'))
+const expanded = ref(false)
 let disconnect: (() => void) | undefined
-onMounted(() => { disconnect = store.connect() })
-onUnmounted(() => disconnect?.())
+let unsubscribe: (() => void) | undefined
+onMounted(() => {
+  disconnect = store.connect()
+  let changed = false
+  unsubscribe = api.onLauncherState((open) => { changed = true; expanded.value = open })
+  void api.launcherState().then((open) => { if (!changed) expanded.value = open }).catch(() => undefined)
+})
+onUnmounted(() => { disconnect?.(); unsubscribe?.() })
 </script>
 
 <template>
-  <main class="launcher">
-    <header class="launcher-header">
-      <Brand :subtitle="plugin?.name" />
-      <div class="launcher-window-buttons">
-        <button class="icon-button" title="设置" aria-label="设置" @click="api.openSettings()"><Settings2 :size="18" /></button>
-        <button class="icon-button" title="关闭" aria-label="关闭" @click="api.hideLauncher()"><X :size="19" /></button>
+  <div v-show="!expanded" class="dock-handle" title="fasthelper" aria-label="fasthelper 贴边入口" />
+  <main v-show="expanded" class="dock-surface">
+    <header class="dock-header">
+      <span>fasthelper</span>
+      <div>
+        <button class="icon-button" title="设置" aria-label="设置" @click="api.openSettings()"><Settings2 :size="17" /></button>
+        <button class="icon-button" title="收起" aria-label="收起" @click="api.hideLauncher()"><X :size="18" /></button>
       </div>
     </header>
-    <SearchPanel v-if="plugin" :key="plugin.id" :plugin-id="plugin.id" compact />
-    <div v-else-if="store.snapshot" class="launcher-empty">
-      <p>启用提供快捷搜索的插件后，可以在这里搜索。</p>
-      <button class="button button-light" @click="api.openSettings()">管理功能 <ArrowRight :size="16" /></button>
-    </div>
+    <Conversation compact :active="expanded" @dismiss="api.hideLauncher()" />
   </main>
 </template>

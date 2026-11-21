@@ -3,12 +3,14 @@ import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import { modelOptions, type FeatureId, type FeatureStates, type FeatureStatus, type ModelId, type SavedApplication } from '../shared/contracts.ts'
 import { searchTerms } from '../shared/search-plan.ts'
+import { speechOptions, type SpeechModelId } from '../shared/speech.ts'
 
 const defaults: FeatureStates = { 'quick-search': 'available' }
 const schemaVersion = 1
 type Preferences = {
   features: FeatureStates
   preferredModel: ModelId | null
+  speechModel: SpeechModelId | null
   everythingEnabled: boolean
   pluginToggles: Partial<Record<FeatureId, Record<string, boolean>>>
   savedApplications: SavedApplication[]
@@ -20,7 +22,7 @@ export function isFeatureStatus(value: unknown): value is FeatureStatus {
 
 export class SettingsStore {
   private preferences: Preferences = {
-    features: { ...defaults }, preferredModel: null, everythingEnabled: true, pluginToggles: {}, savedApplications: [],
+    features: { ...defaults }, preferredModel: null, speechModel: null, everythingEnabled: true, pluginToggles: {}, savedApplications: [],
   }
   private pending: Promise<void> = Promise.resolve()
   firstRun = false
@@ -51,6 +53,7 @@ export class SettingsStore {
         }
       }
       this.preferences.preferredModel = modelOptions.find((model) => model.id === parsed.preferredModel)?.id ?? null
+      this.preferences.speechModel = speechOptions.find((model) => model.id === parsed.speechModel)?.id ?? null
       this.preferences.everythingEnabled = parsed.everythingEnabled !== false
       if (Array.isArray(parsed.savedApplications)) {
         this.preferences.savedApplications = (parsed.savedApplications as unknown[]).filter((entry): entry is SavedApplication => {
@@ -74,6 +77,12 @@ export class SettingsStore {
 
   preferredModel(): ModelId | null {
     return this.preferences.preferredModel
+  }
+
+  speechModel(): SpeechModelId | null { return this.preferences.speechModel }
+
+  setSpeechModel(id: SpeechModelId | null): Promise<void> {
+    return this.update((preferences) => ({ ...preferences, speechModel: id }))
   }
 
   set(id: FeatureId, status: FeatureStatus): Promise<void> {

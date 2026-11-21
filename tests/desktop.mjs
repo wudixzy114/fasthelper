@@ -59,7 +59,8 @@ try {
     window.setDefaultTimeout(12_000)
   }
   watch(settings)
-  await settings.getByRole('heading', { name: '设置', exact: true }).waitFor()
+  await settings.getByRole('heading', { name: '想做什么？', exact: true }).waitFor()
+  await settings.getByRole('link', { name: '本地模型', exact: true }).click()
   if (!localModel) await settings.getByText('已移除旧版千问模型。请选择一档千问 3.5 权重。').waitFor()
   await assert.rejects(access(legacy), { code: 'ENOENT' })
   const light = settings.getByRole('tab', { name: /^0\.8B/u })
@@ -70,6 +71,7 @@ try {
   await settings.getByText('563 MB 权重').waitFor()
   if (localModel) assert.equal((await settings.evaluate(() => window.fasthelper.settings())).activeModel, 'qwen35-0.8b')
   else await settings.getByRole('button', { name: '下载并安装', exact: true }).waitFor()
+  await settings.getByRole('link', { name: '功能管理', exact: true }).click()
   await settings.getByRole('button', { name: /快速搜索\s*导入插件/u }).waitFor()
   await settings.screenshot({ path: join(screenshots, 'settings.png') })
   console.log('PASS old Qwen package removal and Qwen3.5 weight selection')
@@ -135,11 +137,11 @@ try {
   assert.equal(await mainInput.inputValue(), everythingFixture ? '找fhsearchqa' : '计算器')
   await settings.screenshot({ path: join(screenshots, 'plugin-search.png') })
 
-  const nextWindow = application.waitForEvent('window')
   await settings.getByRole('button', { name: '快捷面板', exact: true }).click()
-  const launcher = await nextWindow
+  const launcher = application.windows().find((window) => window.url().endsWith('#/launcher'))
+  assert.ok(launcher)
   watch(launcher)
-  const input = launcher.getByRole('textbox', { name: '搜索或输入指令' })
+  const input = launcher.getByRole('textbox', { name: '输入指令' })
   await input.fill('计算器')
   await launcher.getByRole('list', { name: '搜索结果' }).getByText(/Calculator|计算器/iu).first().waitFor()
   await launcher.screenshot({ path: join(screenshots, 'launcher.png') })
@@ -224,7 +226,7 @@ try {
     }
     console.log('PASS explicit unique command starts Windows Calculator')
   }
-  await launcher.getByRole('button', { name: '关闭' }).click()
+  await launcher.getByRole('button', { name: '收起' }).click()
 
   await settings.getByRole('link', { name: '功能管理', exact: true }).click()
   await settings.getByRole('button', { name: '移除快速搜索' }).click()

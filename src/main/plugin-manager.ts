@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { utilityProcess, type UtilityProcess } from 'electron'
 import type { SearchPlan } from '../shared/search-plan'
 import type { InstalledPlugin, PluginPage, PluginServiceAction, PluginServiceState } from '../shared/contracts'
+import type { PluginCapability } from '../shared/conversation'
 import { pluginApiVersion, searchPluginId, type PluginResult, type WorkerReply, type WorkerRequest } from '../shared/plugin-contract'
 
 type PluginManifest = Omit<InstalledPlugin, 'services' | 'toggles'> & { api: typeof pluginApiVersion; worker: string }
@@ -11,6 +12,10 @@ type Request = WorkerRequest extends infer Message
   ? Message extends WorkerRequest ? Omit<Message, 'id'> : never : never
 const packageLimit = 2_000_000
 const operationTimeout = 15_000
+const legacySearchCapability: PluginCapability = {
+  description: '查找并打开本机的应用，搜索本机文件或文件夹。',
+  examples: ['打开记事本', '找上周的预算表', '杀戮尖塔'], preview: true,
+}
 
 export class SearchPlugin {
   private payload?: PluginManifest
@@ -37,7 +42,7 @@ export class SearchPlugin {
     const { api: _api, worker: _worker, ...plugin } = this.payload
     const toggles = plugin.pages.flatMap((page) => page.view === 'settings' ? page.toggles ?? [] : [])
     return {
-      ...plugin, services: { ...this.services },
+      ...plugin, capability: plugin.capability ?? legacySearchCapability, services: { ...this.services },
       toggles: Object.fromEntries(toggles.map((item) => [item.id, readToggle(item.id, item.default)])),
     }
   }
@@ -158,8 +163,14 @@ export class SearchPlugin {
       || typeof manifest.worker !== 'string' || !manifest.worker
       || typeof manifest.name !== 'string' || manifest.name.length > 40 || manifest.icon !== 'folder-search'
       || !validPages(manifest.pages)
-      || (manifest.compactPage !== undefined && !manifest.pages.some((page: PluginPage) =>
-        page.id === manifest.compactPage && page.view === 'search'))) throw new Error('插件与当前 fasthelper 不兼容。')
+      || (manifest.capability !== undefined && (!manifest.capability
+        || typeof manifest.capability.description !== 'string' || manifest.capability.description.length < 1
+        || manifest.capability.description.length > 100 || typeof manifest.capability.preview !== 'boolean'
+        || !Array.isArray(manifest.capability.examples) || manifest.capability.examples.length > 3
+        || !manifest.capability.examples.every((value: unknown) =>
+          typeof value === 'string' && value.trim().length > 0 && value.length <= 40)))) {
+      throw new Error('插件与当前 fasthelper 不兼容。')
+    }
     return manifest
   }
 

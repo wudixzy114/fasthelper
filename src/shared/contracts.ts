@@ -1,3 +1,6 @@
+import type { ConversationResponse, PluginCapability } from './conversation'
+import type { SpeechEvent, SpeechModelId, SpeechSettings } from './speech'
+
 export const features = [
   {
     id: 'quick-search',
@@ -62,7 +65,7 @@ export type InstalledPlugin = {
   version: string
   icon: string
   pages: PluginPage[]
-  compactPage?: string
+  capability?: PluginCapability
   services: Record<string, PluginServiceState>
   toggles: Record<string, boolean>
 }
@@ -78,6 +81,10 @@ export type UpdateState = {
   percent?: number
 }
 export type SearchKind = 'app' | 'file' | 'folder' | 'portable' | 'installer' | 'uninstaller' | 'helper'
+export const searchKindLabels: Record<SearchKind, string> = {
+  app: '应用', file: '文件', folder: '文件夹', portable: '便携程序',
+  installer: '安装器', uninstaller: '卸载器', helper: '辅助程序',
+}
 export type SavedApplication = { id: string; name: string; path: string; aliases?: string[] }
 export type SavedApplicationItem = SavedApplication & { missing: boolean }
 
@@ -98,6 +105,7 @@ export type SettingsSnapshot = {
   retiredLegacyPackage: boolean
   legacyCleanupPending: boolean
   shortcut: string | null
+  speech: SpeechSettings
 }
 
 export type SearchResult = {
@@ -140,7 +148,21 @@ export interface FasthelperApi {
   openSettings(): Promise<void>
   showLauncher(): Promise<void>
   hideLauncher(): Promise<void>
+  launcherState(): Promise<boolean>
+  onLauncherState(listener: (expanded: boolean) => void): () => void
+  holdLauncher(held: boolean): Promise<void>
   resizeLauncher(height: number): Promise<void>
+  converse(text: string, stage: 'preview' | 'submit'): Promise<ConversationResponse>
+  choosePlugin(token: string): Promise<ConversationResponse>
+  cancelConversation(): Promise<void>
+  openConversationResult(id: string, action: 'open' | 'reveal' | 'add'): Promise<ActionResponse>
+  manageSpeechModel(id: SpeechModelId, action: ModelAction): Promise<SettingsSnapshot>
+  disableSpeechModel(): Promise<SettingsSnapshot>
+  beginSpeech(): Promise<string>
+  pushSpeech(id: string, samples: Float32Array): void
+  finishSpeech(id: string): Promise<void>
+  cancelSpeech(id: string): Promise<void>
+  onSpeech(listener: (event: SpeechEvent) => void): () => void
   search(id: FeatureId, query: string, commit: boolean): Promise<SearchResponse>
   closeSearch(id: FeatureId): Promise<void>
   openResult(id: string, action: 'open' | 'reveal' | 'add'): Promise<ActionResponse>
@@ -164,6 +186,20 @@ export const ipc = {
   showLauncher: 'window:launcher',
   hideLauncher: 'window:hide-launcher',
   resizeLauncher: 'window:resize-launcher',
+  launcherState: 'window:launcher-state',
+  launcherChanged: 'window:launcher-changed',
+  holdLauncher: 'window:hold-launcher',
+  converse: 'conversation:input',
+  choosePlugin: 'conversation:choose',
+  cancelConversation: 'conversation:cancel',
+  openConversationResult: 'conversation:open-result',
+  manageSpeechModel: 'speech:manage',
+  disableSpeechModel: 'speech:disable',
+  beginSpeech: 'speech:begin',
+  pushSpeech: 'speech:push',
+  finishSpeech: 'speech:finish',
+  cancelSpeech: 'speech:cancel',
+  speechEvent: 'speech:event',
   search: 'search:query',
   openResult: 'search:open',
 } as const

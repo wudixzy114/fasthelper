@@ -7,6 +7,54 @@ import { readIntent } from '../src/shared/intent.ts'
 import { confirmedOpenName, literalSearch, toFileSearch, validateSearchPlan } from '../src/shared/search-plan.ts'
 import { classifyFile } from '../src/shared/file-results.ts'
 import { SettingsStore } from '../src/main/settings.ts'
+import { ConversationService, routeDecision } from '../src/main/conversation.ts'
+
+test('routing competes with abstention even with a single installed plugin', () => {
+  assert.deepEqual(routeDecision({ scores: [0.83], abstentionScore: 0.17 }, 1), { direct: 0, candidates: [] })
+  assert.deepEqual(routeDecision({ scores: [0.65], abstentionScore: 0.35 }, 1), { candidates: [0] })
+  assert.deepEqual(routeDecision({ scores: [0.4], abstentionScore: 0.6 }, 1), { candidates: [] })
+  assert.deepEqual(routeDecision({ scores: [0.2, 0.37, 0.24, 0.08], abstentionScore: 0.11 }, 4), { candidates: [1, 2, 0] })
+})
+
+test('routing choices are scoped, consumed once, and rechecked before dispatch', async () => {
+  let ids = ['search', 'notes', 'calc']
+  const executed: string[] = []
+  const router = new ConversationService(() => ids.map((id) => ({
+    id, title: id, capability: { description: id, examples: [], preview: false },
+    run: async (_session, text, stage) => {
+      executed.push(id + ':' + stage + ':' + text)
+      return { kind: 'empty' }
+    },
+  })), async () => ({ scores: [0.34, 0.28, 0.20], abstentionScore: 0.18 }), () => undefined)
+  assert.equal((await router.input(1, '这次请求', 'preview')).kind, 'empty')
+  assert.deepEqual(executed, [])
+  const result = await router.input(1, '   这次请求   ', 'submit')
+  assert.equal(result.kind, 'choices')
+  assert.equal(result.choices.length, 3)
+  assert.equal((await router.choose(2, result.choices[0].token)).kind, 'notice')
+  await router.choose(1, result.choices[0].token)
+  assert.equal((await router.choose(1, result.choices[0].token)).kind, 'notice')
+  assert.deepEqual(executed, ['search:submit:这次请求'])
+  const next = await router.input(1, '新请求', 'submit')
+  assert.equal(next.kind, 'choices')
+  ids = ids.filter((id) => id !== 'search')
+  assert.equal((await router.choose(1, next.choices[0].token)).kind, 'notice')
+  assert.equal(executed.length, 1)
+})
+
+test('obsolete routing requests cannot dispatch after input changes', async () => {
+  const calls: string[] = []
+  let complete!: (value: { scores: number[]; abstentionScore: number }) => void
+  const router = new ConversationService(() => [{
+    id: 'search', title: '搜索', capability: { description: '搜索', examples: [], preview: true },
+    run: async (_session, text, stage) => { calls.push(stage + ':' + text); return { kind: 'empty' } },
+  }], () => new Promise((resolve) => { complete = resolve }), () => undefined)
+  const outdated = router.input(1, '第一条', 'submit')
+  await router.input(1, '第二条', 'preview')
+  complete({ scores: [0.99], abstentionScore: 0.01 })
+  assert.equal((await outdated).kind, 'empty')
+  assert.deepEqual(calls, ['preview:第二条'])
+})
 
 test('opening an application requires an explicit affirmative command', () => {
   assert.deepEqual(readIntent('我想要打开计算器！'), { kind: 'open_app', query: '计算器', explicit: true })

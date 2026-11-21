@@ -1,6 +1,6 @@
 import {
   app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, net, screen,
-  session, shell, Tray, type IpcMainInvokeEvent,
+  session, shell, Tray, type IpcMainInvokeEvent, type WebContents,
 } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -13,6 +13,12 @@ import { LanguageModel } from './language-model'
 import { SearchService } from './search'
 import { SearchPlugin } from './plugin-manager'
 import { Updates } from './updater'
+import { ConversationService } from './conversation'
+import { maxCommandLength } from '../shared/conversation'
+import { speechOptions } from '../shared/speech'
+import { SpeechInstaller } from './speech-models'
+import { SpeechEngine } from './speech-engine'
+import { EdgeDock } from './edge-dock'
 
 const rendererPath = join(__dirname, '../renderer/index.html')
 const rendererUrl = pathToFileURL(rendererPath).href
@@ -22,18 +28,23 @@ const globalKey = 'Control+Shift+Space'
 let registeredShortcut: string | null = null
 let tray: Tray
 let launcher: BrowserWindow | undefined
+let dock: EdgeDock | undefined
 let settings: BrowserWindow | undefined
 let quitting = false
 let store: SettingsStore
 let installer: ModelInstaller
 let language: LanguageModel
 let search: SearchService
+let conversation: ConversationService
+let speechInstaller: SpeechInstaller
+let speech: SpeechEngine
 let plugin: SearchPlugin
 let updates: Updates
 let distribution: { pluginKey: string; pluginUrl: string | null; updateUrl: string | null }
 let changingPlugin = false
 let modelCommandPending = false
 let switchingModel = false
+let speechChanging = false
 
 if (!app.isPackaged && process.env.FASTHELPER_TEST_PROFILE) {
   app.setPath('userData', process.env.FASTHELPER_TEST_PROFILE)
@@ -50,6 +61,13 @@ function pluginDescriptor() {
   return plugin.descriptor((key, defaultValue) => store.pluginToggle(searchPluginId, key, defaultValue))
 }
 
+function activeSpeechModel() {
+  const selected = store.speechModel()
+  return selected && speechInstaller.installed(selected) ? selected : null
+}
+
+const searchSession = (id: number) => 'conversation:' + id
+
 function getSnapshot(): SettingsSnapshot {
   const descriptor = pluginDescriptor()
   return {
@@ -60,6 +78,7 @@ function getSnapshot(): SettingsSnapshot {
     update: updates.snapshot(), models: installer.snapshot(), activeModel: activeModel(),
     retiredLegacyPackage: installer.retiredLegacyPackage, legacyCleanupPending: installer.legacyCleanupPending,
     shortcut: registeredShortcut,
+    speech: { models: speechInstaller.snapshot(), active: activeSpeechModel() },
   }
 }
 
@@ -80,12 +99,12 @@ function trustedUrl(url: string): boolean {
 
 function createWindow(route: string, useLauncher: boolean) {
   const window = new BrowserWindow({
-    title: useLauncher ? 'fasthelper' : 'fasthelper · 设置',
+    title: 'fasthelper',
     icon: iconPath,
     width: useLauncher ? 656 : 1032,
     height: useLauncher ? 218 : 730,
-    minWidth: useLauncher ? 430 : 725,
-    minHeight: useLauncher ? 215 : 594,
+    minWidth: useLauncher ? 1 : 725,
+    minHeight: useLauncher ? 1 : 594,
     show: false,
     backgroundColor: '#f7f8f5',
     autoHideMenuBar: true,
@@ -103,55 +122,75 @@ function createWindow(route: string, useLauncher: boolean) {
   })
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   const sessionId = window.webContents.id
-  window.once('closed', () => search.clear(sessionId))
+  window.once('closed', () => {
+    search.clear(sessionId)
+    conversation.clear(sessionId)
+    speech.cancel(sessionId)
+  })
   window.webContents.on('will-navigate', (event, url) => {
     if (!trustedUrl(url)) event.preventDefault()
   })
   window.webContents.on('will-redirect', (event, url) => {
     if (!trustedUrl(url)) event.preventDefault()
   })
-  window.once('ready-to-show', () => window.show())
-  if (devUrl) void window.loadURL(new URL(`#${route}`, devUrl).href)
-  else void window.loadFile(rendererPath, { hash: route })
+  if (!useLauncher) window.once('ready-to-show', () => window.show())
+  loadRoute(window, route)
   return window
 }
 
-function showSettings() {
+function loadRoute(window: BrowserWindow, route: string) {
+  if (devUrl) void window.loadURL(new URL(`#${route}`, devUrl).href)
+  else void window.loadFile(rendererPath, { hash: route })
+}
+
+function showSettings(route?: string) {
   if (settings) {
+    if (route && !settings.webContents.getURL().endsWith('#' + route)) loadRoute(settings, route)
     if (settings.isMinimized()) settings.restore()
     settings.show()
     settings.focus()
     return
   }
-  settings = createWindow('/settings', false)
+  settings = createWindow(route ?? '/home', false)
   settings.once('closed', () => { settings = undefined })
 }
 
 function hideLauncher() {
-  if (launcher) search.clear(launcher.webContents.id)
-  launcher?.hide()
+  dock?.collapse(true)
+}
+
+function prepareLauncher() {
+  const window = createWindow('/launcher', true)
+  launcher = window
+  const owner = window.webContents.id
+  dock = new EdgeDock(window, (expanded) => {
+    if (!expanded) {
+      conversation.clear(owner)
+      speech.cancel(owner)
+    }
+    window.webContents.send(ipc.launcherChanged, expanded)
+  })
+  window.once('ready-to-show', () => { if (!dock?.expanded) dock?.collapse() })
+  window.on('close', (event) => {
+    if (!quitting) { event.preventDefault(); hideLauncher() }
+  })
+  window.once('closed', () => { launcher = undefined; dock = undefined })
 }
 
 function showLauncher() {
-  if (!launcher) {
-    launcher = createWindow('/launcher', true)
-    launcher.on('close', (event) => {
-      if (!quitting) {
-        event.preventDefault()
-        hideLauncher()
-      }
-    })
-    launcher.once('closed', () => { launcher = undefined })
-  } else {
-    launcher.show()
-    launcher.focus()
-  }
-  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea
-  const [width, height] = launcher.getSize()
-  launcher.setPosition(
-    Math.round(display.x + Math.max(0, display.width - width) / 2),
-    Math.round(display.y + Math.max(0, display.height - height) * 0.26),
-  )
+  if (!launcher) prepareLauncher()
+  dock?.show(true, true)
+}
+
+function trustedSender(contents: WebContents, frame: Electron.WebFrameMain | null) {
+  const sender = BrowserWindow.fromWebContents(contents)
+  return frame && !frame.parent && trustedUrl(frame.url) && sender && (sender === launcher || sender === settings) ? sender : null
+}
+
+function microphoneAllowed(contents: WebContents | null, requestUrl?: string) {
+  if (!contents || !requestUrl || !trustedUrl(requestUrl) || !trustedUrl(contents.getURL())) return false
+  const sender = BrowserWindow.fromWebContents(contents)
+  return (sender === launcher || sender === settings) && speech.allowed(contents.id)
 }
 
 function registerHandlers() {
@@ -159,10 +198,8 @@ function registerHandlers() {
     channel: string, callback: (sender: BrowserWindow, ...args: unknown[]) => T, launcherOnly = false,
   ) {
     ipcMain.handle(channel, (event: IpcMainInvokeEvent, ...args: unknown[]) => {
-      const frame = event.senderFrame
-      const sender = BrowserWindow.fromWebContents(event.sender)
-      if (!frame || frame.parent || !trustedUrl(frame.url)
-        || !sender || (sender !== launcher && (launcherOnly || sender !== settings))) {
+      const sender = trustedSender(event.sender, event.senderFrame)
+      if (!sender || (launcherOnly && sender !== launcher)) {
         throw new Error('无效的请求来源。')
       }
       return callback(sender, ...args)
@@ -178,6 +215,7 @@ function registerHandlers() {
     if (!feature || !isFeatureStatus(status)) throw new Error('无法识别功能设置。')
     if (changingPlugin) throw new Error('快速搜索操作正在进行。')
     changingPlugin = true
+    conversation.clear()
     search.clear()
     try {
       if (status === 'enabled' && !plugin.installed()) {
@@ -313,18 +351,82 @@ function registerHandlers() {
     if (!model) throw new Error('无法识别模型。')
     return shell.openExternal(model.source)
   })
-  handle(ipc.openSettings, () => { hideLauncher(); showSettings() })
+  handle(ipc.manageSpeechModel, async (id, action) => {
+    const model = speechOptions.find((entry) => entry.id === id)
+    if (!model || speechChanging) throw new Error('语音模型操作无效或正在进行。')
+    speechChanging = true
+    try {
+      switch (action) {
+        case 'install':
+          if (speechInstaller.busy()) throw new Error('语音模型正在处理。')
+          if (!store.speechModel()) await store.setSpeechModel(model.id)
+          speechInstaller.install(model.id)
+          break
+        case 'cancel': speechInstaller.cancel(model.id); break
+        case 'activate':
+          if (!speechInstaller.installed(model.id)) throw new Error('请先安装语音模型。')
+          if (store.speechModel() !== model.id) {
+            await speech.stop()
+            await store.setSpeechModel(model.id)
+          }
+          break
+        case 'remove':
+          await speechInstaller.remove(model.id, () => store.speechModel() === model.id ? speech.stop() : Promise.resolve())
+          if (store.speechModel() === model.id) await store.setSpeechModel(null)
+          break
+        default: throw new Error('语音模型操作无效。')
+      }
+    } finally { speechChanging = false; publishSettings() }
+    return getSnapshot()
+  })
+  handle(ipc.disableSpeechModel, async () => {
+    if (speechChanging) throw new Error('语音模型正在处理。')
+    speechChanging = true
+    try {
+      await speech.stop()
+      await store.setSpeechModel(null)
+    } finally { speechChanging = false; publishSettings() }
+    return getSnapshot()
+  })
+  handleWindow(ipc.beginSpeech, (sender) => {
+    if (speechChanging || (sender === launcher && !dock?.expanded)) throw new Error('当前无法开始语音输入。')
+    return speech.begin(sender.webContents.id)
+  })
+  ipcMain.on(ipc.pushSpeech, (event, id, samples) => {
+    if (trustedSender(event.sender, event.senderFrame) && typeof id === 'string' && id.length === 36) {
+      speech.push(event.sender.id, id, samples)
+    }
+  })
+  handleWindow(ipc.finishSpeech, (sender, id) => { if (typeof id === 'string') speech.finish(sender.webContents.id, id) })
+  handleWindow(ipc.cancelSpeech, (sender, id) => { if (typeof id === 'string') speech.cancel(sender.webContents.id, id) })
+  handle(ipc.openSettings, () => { hideLauncher(); showSettings('/settings') })
   handle(ipc.showLauncher, showLauncher)
   handle(ipc.hideLauncher, hideLauncher, true)
+  handle(ipc.launcherState, () => !!dock?.expanded, true)
+  handle(ipc.holdLauncher, (held) => {
+    if (dock?.expanded && typeof held === 'boolean') dock.held = held
+  }, true)
   handle(ipc.resizeLauncher, (height) => {
     if (typeof height !== 'number' || !Number.isSafeInteger(height)) return
-    if (!launcher) return
-    const bounds = launcher.getBounds()
-    const display = screen.getDisplayMatching(bounds).workArea
-    const nextHeight = Math.min(490, Math.max(215, height), display.height)
-    const y = Math.min(bounds.y, display.y + display.height - nextHeight)
-    if (bounds.height !== nextHeight) launcher.setBounds({ ...bounds, y, height: nextHeight })
+    dock?.resize(height)
   }, true)
+  handleWindow(ipc.converse, (sender, text, stage) => {
+    if (typeof text !== 'string' || text.length > maxCommandLength || (stage !== 'preview' && stage !== 'submit')) {
+      throw new Error('指令内容无效。')
+    }
+    return conversation.input(sender.webContents.id, text, stage)
+  })
+  handleWindow(ipc.choosePlugin, (sender, token) => {
+    if (typeof token !== 'string' || token.length !== 36) throw new Error('插件候选无效。')
+    return conversation.choose(sender.webContents.id, token)
+  })
+  handleWindow(ipc.cancelConversation, (sender) => conversation.clear(sender.webContents.id))
+  handleWindow(ipc.openConversationResult, (sender, id, action) => {
+    if (typeof id !== 'string' || id.length !== 36 || (action !== 'open' && action !== 'reveal' && action !== 'add')) {
+      throw new Error('结果操作无效。')
+    }
+    return search.open(searchSession(sender.webContents.id), id, action)
+  })
   handleWindow(ipc.search, (sender, id, query, commit) => {
     if (id !== searchPluginId || typeof query !== 'string' || query.length > 250 || typeof commit !== 'boolean') {
       throw new Error('搜索内容无效。')
@@ -348,6 +450,14 @@ async function initialize() {
   distribution = JSON.parse(await readFile(join(app.getAppPath(), 'build', 'distribution.json'), 'utf8'))
   store = new SettingsStore(join(dataDirectory, 'settings-v1.json'))
   installer = new ModelInstaller(join(dataDirectory, 'models'), (input, init) => net.fetch(input, init), publishSettings)
+  speechInstaller = new SpeechInstaller(join(dataDirectory, 'speech'), (input, init) => net.fetch(input, init), publishSettings)
+  speech = new SpeechEngine(() => {
+    const id = activeSpeechModel()
+    return id && !speechChanging ? speechInstaller.configuration(id) : null
+  }, (id, event) => {
+    const window = [launcher, settings].find((entry) => entry?.webContents.id === id)
+    window?.webContents.send(ipc.speechEvent, event)
+  })
   language = new LanguageModel(() => {
     const id = activeModel()
     return id && !switchingModel ? installer.configuration(id) : null
@@ -355,10 +465,29 @@ async function initialize() {
   plugin = new SearchPlugin(join(dataDirectory, 'plugins', 'quick-search'), distribution.pluginKey, publishSettings)
   updates = new Updates(distribution.updateUrl, publishSettings)
   search = new SearchService(store, plugin, language)
-  await Promise.all([store.load(), installer.init()])
+  conversation = new ConversationService(() => {
+    if (changingPlugin || store.snapshot()[searchPluginId] !== 'enabled') return []
+    const entry = pluginDescriptor()
+    if (!entry?.capability) return []
+    return [{
+      id: entry.id, title: entry.name, capability: entry.capability,
+      run: async (id, text, stage) => ({
+        kind: 'search', title: entry.name, preview: stage === 'preview',
+        response: await search.query(searchSession(id), { text, stage }),
+      }),
+    }]
+  }, (text, options, signal) => language.scoreRoutes(text, options, signal), (id) => {
+    if (id !== undefined) search.clear(searchSession(id))
+    else search.clear()
+  })
+  await Promise.all([store.load(), installer.init(), speechInstaller.init()])
   await plugin.init(store.everythingEnabled())
-  session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
-  session.defaultSession.setPermissionCheckHandler(() => false)
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) =>
+    callback(permission === 'media' && 'mediaTypes' in details && details.mediaTypes?.length === 1
+      && details.mediaTypes[0] === 'audio' && details.isMainFrame && microphoneAllowed(contents, details.requestingUrl)))
+  session.defaultSession.setPermissionCheckHandler((contents, permission, _origin, details) =>
+    permission === 'media' && details.mediaType === 'audio' && details.isMainFrame === true
+      && microphoneAllowed(contents, details.requestingUrl))
   registerHandlers()
   if (plugin.installed() && store.snapshot()['quick-search'] === 'enabled') void plugin.warm().catch(() => undefined)
   if (globalShortcut.register(globalKey, () => {
@@ -371,11 +500,12 @@ async function initialize() {
   tray.on('click', showLauncher)
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开快捷面板', click: showLauncher },
-    { label: '打开主窗口', click: showSettings },
+    { label: '打开主窗口', click: () => showSettings() },
     { type: 'separator' },
     { label: '退出 fasthelper', click: () => app.quit() },
   ]))
   showSettings()
+  prepareLauncher()
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -388,9 +518,11 @@ if (!app.requestSingleInstanceLock()) {
     event.preventDefault()
     quitting = true
     installer?.cancel()
+    speechInstaller?.cancel()
+    conversation?.clear()
     search?.clear()
     globalShortcut.unregisterAll()
-    void Promise.allSettled([language?.stop(), plugin?.stop()]).finally(() => app.quit())
+    void Promise.allSettled([language?.stop(), plugin?.stop(), speech?.stop()]).finally(() => app.quit())
   })
   void app.whenReady().then(initialize).catch((error: unknown) => {
     console.error(error)

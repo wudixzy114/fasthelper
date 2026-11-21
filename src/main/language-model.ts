@@ -7,9 +7,10 @@ import { setTimeout as delay } from 'node:timers/promises'
 import type { SearchKind, SearchResult } from '../shared/contracts'
 import { validateSearchPlan, type SearchPlan } from '../shared/search-plan'
 import type { LocalModelConfiguration } from './models'
-import { maxDecisionCandidates, scoreCandidates, tokenizeAnswerSlots } from './semif'
+import type { RouteOption } from './conversation'
+import { fitLabels, maxDecisionCandidates, scoreCandidates, scoreRouteFit, tokenizeAnswerSlots } from './semif'
 
-type Endpoint = { url: string; key: string; child: ChildProcess; signal: AbortSignal; labelIds?: number[] }
+type Endpoint = { url: string; key: string; child: ChildProcess; signal: AbortSignal; labelIds?: number[]; fitLabelIds?: number[] }
 type ModelPath = '/v1/chat/completions' | '/apply-template' | '/completion' | '/tokenize'
 
 const systemPrompt = `你是 Windows 本地搜索的查询解析器。只输出 JSON。动作 action 为 search、open_app 或 clarify。用户明确要打开或启动一个应用时用 open_app 且 scope 为 apps；查找或只输入名称时用 search。缺少明确的目标或有多个不同的请求时用 clarify 和空 terms。scope 为 apps（应用）、files（文件）或 all（不确定）。
@@ -98,6 +99,34 @@ export class LanguageModel {
       return { ...shortlist[index], match } as T & Pick<SearchResult, 'match'>
     })
     return { results: [...results, ...candidates.slice(shortlist.length)], uncertain: decision.uncertain }
+  }
+
+  async scoreRoutes(text: string, options: readonly RouteOption[], signal: AbortSignal) {
+    const model = this.configuration()
+    if (!model || options.length === 0 || options.length > maxDecisionCandidates) return null
+    signal.throwIfAborted()
+    const endpoint = await this.start(model)
+    const budget = this.budget(model, signal)
+    const request = (path: '/apply-template' | '/completion', input: object) => this.request(endpoint, path, input, budget)
+    const tokenize = (content: string) => this.request(endpoint, '/tokenize', { content, add_special: false }, budget)
+    if (options.length === 1) {
+      endpoint.fitLabelIds ??= await tokenizeAnswerSlots(tokenize, fitLabels)
+      return scoreRouteFit(request, endpoint.fitLabelIds, text, options[0].capability.description)
+    }
+    endpoint.labelIds ??= await tokenizeAnswerSlots(tokenize)
+    const descriptions = options.map(({ title, capability }) => ({
+        title, description: capability.description + ' 示例：' + capability.examples.join('、'),
+    }))
+    const forward = await scoreCandidates(request, endpoint.labelIds, text, descriptions, 'routing')
+    if (!forward) return null
+    const reverse = await scoreCandidates(request, endpoint.labelIds, text, descriptions.slice().reverse(), 'routing', true)
+    if (!reverse) return null
+    const descending = reverse.scores.slice().reverse()
+    // The geometric mean averages log odds across the two label assignments.
+    const combined = forward.scores.map((score, index) => Math.sqrt(score * descending[index]))
+    const abstention = Math.sqrt(forward.abstentionScore * reverse.abstentionScore)
+    const total = combined.reduce((sum, score) => sum + score, abstention)
+    return total > 0 ? { scores: combined.map((score) => score / total), abstentionScore: abstention / total } : null
   }
 
   private budget(model: LocalModelConfiguration, signal: AbortSignal): AbortSignal {

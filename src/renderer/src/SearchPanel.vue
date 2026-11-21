@@ -4,7 +4,7 @@ import {
   ArrowRight, ArrowUpRight, CornerDownLeft, FileText, FolderOpen, LoaderCircle,
   Search, Zap,
 } from '@lucide/vue'
-import { searchSourceLabels, type FeatureId, type SearchSource, type SearchResult, type SearchKind } from '../../shared/contracts'
+import { searchKindLabels, searchSourceLabels, type FeatureId, type SearchSource, type SearchResult, type SearchKind } from '../../shared/contracts'
 import { useSettings } from './store'
 
 const store = useSettings()
@@ -23,10 +23,6 @@ const opening = ref(false)
 const submitted = ref(false)
 const selected = ref(-1)
 const filter = ref<'all' | 'app' | 'file'>('all')
-const groupLabels: Record<SearchKind, string> = {
-  app: '应用', file: '文件', folder: '文件夹', portable: '便携程序',
-  installer: '安装器', uninstaller: '卸载器', helper: '辅助程序',
-}
 const matchLabels = { high: '匹配度高', medium: '匹配度一般', low: '匹配度低' }
 const groupedResults = computed(() => {
   const groups = new Map<SearchKind, SearchResult[]>()
@@ -37,7 +33,7 @@ const groupedResults = computed(() => {
   }
   let index = 0
   return [...groups].flatMap(([kind, items]) =>
-    items.map((item, offset) => ({ item, index: index++, heading: offset === 0 ? groupLabels[kind] : null })))
+    items.map((item, offset) => ({ item, index: index++, heading: offset === 0 ? searchKindLabels[kind] : null })))
 })
 const dateFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' })
 

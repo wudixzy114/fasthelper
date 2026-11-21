@@ -8,8 +8,8 @@ import { pipeline } from 'node:stream/promises'
 import type { ReadableStream } from 'node:stream/web'
 import { modelOptions, type ModelId, type ModelState } from '../shared/contracts'
 
-type Artifact = { url: string; bytes: number; sha256: string }
-type FetchArtifact = (url: string, options: RequestInit) => Promise<Response>
+export type Artifact = { url: string; bytes: number; sha256: string }
+export type FetchArtifact = (url: string, options: RequestInit) => Promise<Response>
 
 const weights: Record<ModelId, Artifact> = {
   'qwen35-0.8b': {
@@ -29,11 +29,11 @@ const engine: Artifact = {
   sha256: '425eeb2a94a9600dadf369a7c9c7dd0141948921efc0fa9ec7872970fffc845d',
 }
 
-async function expandRuntime(archive: string, directory: string): Promise<void> {
+export async function expandRuntime(archive: string, directory: string, signal?: AbortSignal): Promise<void> {
   await mkdir(directory)
   const tar = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
   await new Promise<void>((resolve, reject) => {
-    execFile(tar, ['-xf', archive, '-C', directory], { windowsHide: true, timeout: 60_000 },
+    execFile(tar, ['-xf', archive, '-C', directory], { windowsHide: true, timeout: 60_000, signal },
       (error) => error ? reject(error) : resolve())
   })
 }

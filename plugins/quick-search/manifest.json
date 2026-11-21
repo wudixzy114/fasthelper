@@ -3,7 +3,11 @@
   "api": 3,
   "name": "快速搜索",
   "icon": "folder-search",
-  "compactPage": "search",
+  "capability": {
+    "description": "查找并打开本机的应用，搜索本机文件或文件夹。",
+    "examples": ["打开记事本", "找上周的预算表", "杀戮尖塔"],
+    "preview": true
+  },
   "pages": [
     { "id": "search", "title": "搜索", "view": "search" },
     {

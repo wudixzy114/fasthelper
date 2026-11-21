@@ -12,6 +12,7 @@ import { autoOpenPreference, searchPluginId, type Candidate, type PluginResult }
 
 type SearchItem = Candidate & Pick<SearchResult, 'missing' | 'savedId' | 'match'>
 type Session = { request: AbortController; targets: Map<string, SearchItem> }
+type SessionKey = number | string
 
 function isApplication(item: SearchItem): boolean {
   return item.canOpen && !item.missing && (item.kind === 'app' || item.kind === 'portable')
@@ -27,7 +28,7 @@ function isSearchTarget(item: SearchItem, plan: SearchPlan): boolean {
 }
 
 export class SearchService {
-  private readonly sessions = new Map<number, Session>()
+  private readonly sessions = new Map<SessionKey, Session>()
 
   constructor(
     private readonly settings: SettingsStore,
@@ -39,7 +40,7 @@ export class SearchService {
     return this.plugin.installed() && this.settings.snapshot()[searchPluginId] === 'enabled'
   }
 
-  clear(id?: number): void {
+  clear(id?: SessionKey): void {
     if (id !== undefined) {
       this.sessions.get(id)?.request.abort()
       this.sessions.delete(id)
@@ -49,7 +50,7 @@ export class SearchService {
     }
   }
 
-  async query(sessionId: number, input: { text: string; stage: SearchStage }): Promise<SearchResponse> {
+  async query(sessionId: SessionKey, input: { text: string; stage: SearchStage }): Promise<SearchResponse> {
     this.clear(sessionId)
     const request = new AbortController()
     const targets = new Map<string, SearchItem>()
@@ -110,7 +111,7 @@ export class SearchService {
     }
   }
 
-  async open(sessionId: number, id: string, action: 'open' | 'reveal' | 'add'): Promise<ActionResponse> {
+  async open(sessionId: SessionKey, id: string, action: 'open' | 'reveal' | 'add'): Promise<ActionResponse> {
     const session = this.sessions.get(sessionId)
     const entry = session?.targets.get(id)
     if (!session || !entry || !this.enabled()) return { ok: false, message: '结果已失效，请重新搜索。' }

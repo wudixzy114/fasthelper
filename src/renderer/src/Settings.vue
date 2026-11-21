@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Dialog, DialogPanel, DialogTitle, Switch, Tab, TabGroup, TabList, TabPanel, TabPanels } from '@headlessui/vue'
 import {
-  ArrowDownToLine, ArrowRight, ArrowUpRight, Check, Cpu, FolderSearch,
+  ArrowDownToLine, ArrowUpRight, Check, Cpu, FolderSearch,
   LoaderCircle, ShieldCheck, Trash2,
 } from '@lucide/vue'
 import { features, modelOptions, type FeatureId, type ModelId } from '../../shared/contracts'
@@ -13,7 +13,7 @@ const store = useSettings()
 const api = window.fasthelper
 const route = useRoute()
 const routeInfo = {
-  overview: { title: '设置', description: '开启需要的功能，把常用操作交给 fasthelper。' },
+  overview: { title: '设置', description: '管理桌面入口和应用更新。' },
   features: { title: '功能管理', description: '按需安装、停用或移除独立插件。' },
   model: { title: '本地模型', description: '选择 SemIf 和语言理解共用的千问权重。' },
 } as const
@@ -96,7 +96,7 @@ function confirmRemoval() {
     <p v-else-if="snapshot.retiredLegacyPackage && !snapshot.activeModel" class="feedback" role="status">已移除旧版千问模型。请选择一档千问 3.5 权重。</p>
 
     <template v-if="snapshot">
-      <section v-if="currentPage !== 'features'" aria-labelledby="model-title" class="model-card">
+      <section v-if="currentPage === 'model'" aria-labelledby="model-title" class="model-card">
         <div class="model-body">
           <div class="model-eyebrow"><Cpu :size="16" /> 可选 · 本地语义决策</div>
           <h2 id="model-title">SemIf + Qwen3.5</h2>
@@ -162,12 +162,8 @@ function confirmRemoval() {
         </div>
       </section>
 
-      <section v-if="currentPage !== 'model'" aria-labelledby="features-title" class="features">
-        <header v-if="currentPage === 'overview'" class="section-header">
-          <div><h2 id="features-title">功能插件</h2><p>按需开启，每项功能都可以独立使用。</p></div>
-          <RouterLink :to="{ name: 'features' }" class="section-link">管理功能 <ArrowRight :size="15" /></RouterLink>
-        </header>
-        <header v-else class="section-header">
+      <section v-if="currentPage === 'features'" aria-labelledby="features-title" class="features">
+        <header class="section-header">
           <div><h2 id="features-title">已提供的插件</h2><p>{{ activeCount }} 项已启用</p></div>
         </header>
         <div class="feature-list">

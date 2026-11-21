@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { ArrowUpRight, ChevronRight, Cpu, FolderSearch, Grid2X2, Keyboard, LayoutDashboard } from '@lucide/vue'
+import { ArrowUpRight, ChevronRight, Cpu, FolderSearch, Grid2X2, Keyboard, MessageSquare, Mic, Settings2 } from '@lucide/vue'
 import Brand from './Brand.vue'
 import { useSettings } from './store'
 
@@ -9,9 +9,11 @@ const store = useSettings()
 const route = useRoute()
 const api = window.fasthelper
 const navigation = [
-  { route: 'overview', label: '概览', icon: LayoutDashboard },
+  { route: 'home', label: '对话', icon: MessageSquare },
   { route: 'features', label: '功能管理', icon: Grid2X2 },
   { route: 'model', label: '本地模型', icon: Cpu },
+  { route: 'speech', label: '本地语音', icon: Mic },
+  { route: 'overview', label: '设置', icon: Settings2 },
 ] as const
 let disconnect: (() => void) | undefined
 onMounted(() => { disconnect = store.connect() })

@@ -1,6 +1,12 @@
 # fasthelper
 
-Windows 11 x64 本地快捷助手。通过「功能管理」按需安装快速搜索。插件可从主窗口侧栏打开，也可通过托盘或 `Ctrl + Shift + Space` 打开紧凑搜索视图。
+Windows 11 x64 本地快捷助手。首页「对话」和桌面贴边悬浮窗使用同一个输入框。可通过托盘或 `Ctrl + Shift + Space` 打开悬浮窗。通过「功能管理」按需安装快速搜索。
+
+## 统一入口
+
+- 输入草稿时，支持预览的插件可以返回只读结果。按回车提交指令。首页和悬浮窗支持键盘以及系统提供的文本输入。
+- 本地 SemIf 判断原话应交给哪个已安装且启用的插件，保留无匹配选项。分数不足时展示至多三个插件，点选后执行。快速搜索接到原话后执行自己的检索计划和结果校验。
+- 在「本地语音」按需安装 X-ASR-zh-en 0.16B，启用后点击麦克风进行流式转写。停说后文字可编辑，按回车才执行。音频在本机的独立进程处理。安装时校验模型及运行时的固定版本、体积和 SHA-256。 [X-ASR](https://huggingface.co/GilgameshWind/X-ASR-zh-en)
 
 ## 开发
 
@@ -15,12 +21,15 @@ npm run dev
 npm test
 npm run build
 npm run test:desktop
+npm run test:conversation
 npm run package:win
 ```
 
 桌面测试使用独立用户目录。`$env:FASTHELPER_TEST_MODEL='1'` 验证 0.8B 的安装和本地推理，`'all'` 验证两档权重及切换。也可以通过 `FASTHELPER_TEST_LOCAL_MODEL` 指定已有的模型目录，连同 `FASTHELPER_TEST_EVERYTHING` 验证本地语言解析和索引召回。测试在独立目录中使用副本，并在结束后清理。标准账户下用 Windows Search 做文件查找，结果范围取决于该账户可见的系统索引。
 
 每轮功能改动验证后运行 `npm run upgrade:local`。脚本构建 Windows 安装包、覆盖当前用户的 fasthelper、校验已安装内容，并更新已安装的快速搜索插件。如果应用原本在运行，升级完成后会重新打开。
+
+统一入口桌面测试通过 `FASTHELPER_TEST_LOCAL_MODEL` 使用已有的千问模型目录。可设 `FASTHELPER_TEST_SPEECH_DOWNLOAD=1` 测试一键安装，或用 `FASTHELPER_TEST_SPEECH_PROFILE` 指定已安装的语音模型目录副本。通过 `FASTHELPER_TEST_AUDIO` 提供内容为「杀戮尖塔」的 WAV 文件，可以用 Chromium 模拟麦克风测试离线转写和路由。测试使用独立配置目录。
 
 ## 本地决策与语言理解
 
@@ -92,8 +101,8 @@ flowchart TD
 
 正式发布时需要在构建环境配置 `FASTHELPER_PLUGIN_SIGNING_KEY_FILE`（Ed25519 私钥文件）、`FASTHELPER_PLUGIN_URL`（独立插件包的 HTTPS 地址）和 `FASTHELPER_UPDATE_URL`（electron-updater 的 HTTPS 发布目录）。主程序更新使用 Windows Authenticode 签名，签名凭据由 CI 或本地签名环境提供。先上传安装包与差分文件，再更新 `latest.yml`。私钥文件不放入工作区或应用。 [NSIS 自动更新](https://www.electron.build/v26/docs/features/auto-update/)
 
-Vue、Vue Router、Pinia 与 Headless UI 管理界面和状态。签名插件清单声明侧栏入口、至多两个页面和可选的快捷页。宿主渲染统一界面，并按窗口隔离查询和结果权限。快速搜索进程提供候选、来源及索引状态。便携程序可添加为应用，在插件设置页重新定位或移除。
+Vue、Vue Router、Pinia 与 Headless UI 管理界面和状态。签名插件清单声明工作区页面与可选的路由能力。宿主渲染统一界面，并按窗口和入口隔离查询与结果权限。快速搜索进程提供候选、来源及索引状态。便携程序可添加为应用，在插件设置页重新定位或移除。
 
-首轮交付内置能力和本地模型管理。语音转写、独立发布的第三方插件及正式签名在后续里程碑。
+独立发布的第三方插件及正式签名在后续里程碑。
 
 项目源码采用 MIT 许可。第三方组件适用其各自许可。
