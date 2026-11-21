@@ -6,7 +6,7 @@ import { access, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:
 import { join, win32 } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { PluginServiceState } from '../../src/shared/contracts'
-import { toFileQuery } from '../../src/shared/intent'
+import type { FileSearch } from '../../src/shared/search-plan'
 import { localPath } from '../../src/shared/file-results'
 import { runScript, type WindowsFile } from './windows'
 import { indexStatus } from './everything-status'
@@ -235,7 +235,7 @@ export class Everything {
     return reasons[this.state.status] ?? '本次 Everything 查询失败'
   }
 
-  async find(query: string, signal: AbortSignal, applicationsOnly: boolean): Promise<IndexedFile[] | null> {
+  async find(requested: FileSearch, signal: AbortSignal): Promise<{ files: IndexedFile[]; complete: boolean } | null> {
     if (!this.enabled) return null
     if (!this.executable || this.state.status !== 'ready') {
       if (!this.executable && this.state.status === 'waiting') this.begin()
@@ -245,16 +245,26 @@ export class Everything {
     try {
       output = await mkdtemp(join(tmpdir(), 'fasthelper-search-'))
       const result = join(output, 'results.efu')
-      const requested = toFileQuery(query)
-      const text = requested.name.replace(/[^\p{L}\p{N}_.\- ]/gu, ' ').trim()
-      if (!text) return []
-      const words = text.split(/\s+/u).map((word) => `regex:${word.replaceAll('.', '\\.')}`).join(' ')
-      const filter = applicationsOnly ? ' ext:exe;lnk;msi;msix;appx' : ''
-      const dates = requested.after && requested.before
-        ? ` dm:${localDate(requested.after)}..${localDate(requested.before)}` : ''
-      await this.run(['-export-efu', result, '-utf8-bom', '-n', '60', words + filter + dates], signal)
-      return parseEfu(await readFile(result, 'utf8')).filter((item) =>
+      const terms = new Set<string>()
+      for (const term of requested.terms) {
+        const words = term.match(/[\p{L}\p{N}_.-]+/gu)?.filter((word) => /[\p{L}\p{N}]/u.test(word)) ?? []
+        if (!words.length) continue
+        terms.add(words.join(''))
+        // Match spaced titles and compact executable names with the index's literal search.
+        if (words.length > 1) terms.add('<' + words.map((word) => '<' + word + '>').join('') + '>')
+      }
+      if (!terms.size) return { files: [], complete: true }
+      const args = ['-export-efu', result, '-utf8-bom', '-n', '60']
+      if (requested.directory) args.push('-path', requested.directory)
+      args.push(`<${[...terms].join('|')}>`)
+      if (requested.extension) args.push(`ext:${requested.extension}`)
+      else if (requested.applicationsOnly) args.push('ext:exe;lnk;msi;msix;appx;msp;appxbundle;msixbundle')
+      if (requested.after && requested.before) args.push(`dm:${localDate(requested.after)}..${localDate(requested.before)}`)
+      await this.run(args, signal)
+      const files = parseEfu(await readFile(result, 'utf8'))
+      const filtered = files.filter((item) =>
         !requested.after || !!item.date && item.date >= requested.after && item.date < requested.before!)
+      return { files: filtered, complete: files.length < 60 }
     } catch {
       if (!signal.aborted && this.enabled) void this.refresh()
       return null

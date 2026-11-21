@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { access, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, copyFile, cp, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -8,6 +8,7 @@ import { _electron } from 'playwright-core'
 const profile = await mkdtemp(join(tmpdir(), 'fasthelper-desktop-'))
 const screenshots = resolve('release', 'verification')
 const modelTest = process.env.FASTHELPER_TEST_MODEL
+const localModel = process.env.FASTHELPER_TEST_LOCAL_MODEL
 const everythingFixture = process.env.FASTHELPER_TEST_EVERYTHING
 const testTransfer = process.env.FASTHELPER_TEST_TRANSFER === '1'
 await mkdir(screenshots, { recursive: true })
@@ -20,6 +21,11 @@ try {
   await writeFile(join(profile, 'settings-v1.json'), JSON.stringify({
     version: 1, features: { apps: 'available', files: 'available' },
   }))
+  if (localModel) {
+    const models = join(profile, 'models')
+    await Promise.all(['llama-cpp-b12606-win-x64', 'qwen35-0.8b'].map((name) =>
+      cp(join(localModel, name), join(models, name), { recursive: true })))
+  }
   const corpus = join(profile, 'search-fixture')
   const portableApp = join(corpus, 'fhsearchqa-portable.exe')
   const movedApp = join(corpus, 'fhsearchqa-renamed.exe')
@@ -37,8 +43,10 @@ try {
         `folders="${corpus.replaceAll('\\', '\\\\')}"`, 'folder_monitor_changes=1',
       ].join('\r\n')),
       ...['fhsearchqa-文档.txt', 'fhsearchqa-setup.exe', 'fhsearchqa-uninstall.exe',
-        'fhsearchqa-helper.exe', 'fhsearchqa-portable.exe'].map((name) => writeFile(join(corpus, name), 'fixture')),
+        'fhsearchqa-helper.exe', 'fhsearchqa-portable.exe', 'SlayTheSpire.exe', 'SlayTheSpire2.exe',
+        '杀戮尖塔2血量修改器.exe', 'fhsearchqa-today.pdf', 'fhsearchqa-stale.pdf'].map((name) => writeFile(join(corpus, name), 'fixture')),
     ])
+    await utimes(join(corpus, 'fhsearchqa-stale.pdf'), new Date(2000, 0, 1), new Date(2000, 0, 1))
   }
   application = await _electron.launch({
     args: ['.'],
@@ -52,7 +60,7 @@ try {
   }
   watch(settings)
   await settings.getByRole('heading', { name: '设置', exact: true }).waitFor()
-  await settings.getByText('已移除旧版千问模型。请选择一档千问 3.5 权重。').waitFor()
+  if (!localModel) await settings.getByText('已移除旧版千问模型。请选择一档千问 3.5 权重。').waitFor()
   await assert.rejects(access(legacy), { code: 'ENOENT' })
   const light = settings.getByRole('tab', { name: /^0\.8B/u })
   const large = settings.getByRole('tab', { name: /^4B/u })
@@ -60,7 +68,8 @@ try {
   await settings.getByText('3.03 GB 权重').waitFor()
   await light.click()
   await settings.getByText('563 MB 权重').waitFor()
-  await settings.getByRole('button', { name: '下载并安装', exact: true }).waitFor()
+  if (localModel) assert.equal((await settings.evaluate(() => window.fasthelper.settings())).activeModel, 'qwen35-0.8b')
+  else await settings.getByRole('button', { name: '下载并安装', exact: true }).waitFor()
   await settings.getByRole('button', { name: /快速搜索\s*导入插件/u }).waitFor()
   await settings.screenshot({ path: join(screenshots, 'settings.png') })
   console.log('PASS old Qwen package removal and Qwen3.5 weight selection')
@@ -93,6 +102,10 @@ try {
   await settingsTab.click()
   const engine = settings.getByRole('switch', { name: /启用 Everything/u })
   assert.equal(await engine.getAttribute('aria-checked'), 'true')
+  const autoOpen = settings.getByRole('switch', { name: '自动打开唯一应用' })
+  assert.equal(await autoOpen.getAttribute('aria-checked'), 'true')
+  await autoOpen.click()
+  await settings.locator('[aria-label="自动打开唯一应用"][aria-checked="false"]').waitFor()
   if (everythingFixture) {
     await settings.waitForFunction(() =>
       window.testEverythingStages.some(({ status }) => status === 'ready'), undefined, { timeout: 45_000 })
@@ -114,7 +127,6 @@ try {
   const mainInput = settings.getByRole('textbox', { name: '搜索或输入指令' })
   await mainInput.fill(everythingFixture ? '找fhsearchqa' : '计算器')
   if (everythingFixture) {
-    await mainInput.press('Enter')
     await settings.getByText('fhsearchqa-文档.txt', { exact: true }).waitFor()
     await settings.getByText('本次搜索 · Everything', { exact: true }).waitFor()
   } else await settings.getByRole('list', { name: '搜索结果' }).getByText(/Calculator|计算器/iu).first().waitFor()
@@ -133,18 +145,59 @@ try {
   await launcher.screenshot({ path: join(screenshots, 'launcher.png') })
   console.log('PASS application catalog search on Windows')
 
+  if (localModel && everythingFixture) {
+    await application.evaluate(({ session }) => session.defaultSession.enableNetworkEmulation({ offline: true }))
+    await mainInput.fill('打开杀戮尖塔')
+    await settings.getByText('杀戮尖塔2血量修改器.exe', { exact: true }).waitFor()
+    assert.equal(await settings.getByText('SlayTheSpire.exe', { exact: true }).count(), 0)
+    await mainInput.press('Enter')
+    await settings.getByText('SlayTheSpire.exe', { exact: true }).waitFor({ timeout: 55_000 })
+    await settings.getByText('SlayTheSpire2.exe', { exact: true }).waitFor()
+    await settings.getByText('辅助程序', { exact: true }).waitFor()
+    await settings.locator('.match-mark').first().waitFor()
+    assert.equal(await settings.getByText(/^已打开 /u).count(), 0)
+    await mainInput.fill('找今天修改的 fhsearchqa PDF')
+    await mainInput.press('Enter')
+    await settings.getByText('fhsearchqa-today.pdf', { exact: true }).waitFor()
+    assert.equal(await settings.getByText('fhsearchqa-stale.pdf', { exact: true }).count(), 0)
+    assert.equal(await settings.getByText('fhsearchqa-文档.txt', { exact: true }).count(), 0)
+    await mainInput.fill('打开计算器')
+    await mainInput.press('Enter')
+    await settings.getByRole('list', { name: '搜索结果' }).getByText(/Calculator|计算器/iu).first().waitFor()
+    assert.equal(await settings.getByText(/^已打开 /u).count(), 0)
+    console.log('PASS offline Qwen search planning, SemIf ranking and disabled auto-open')
+    await application.evaluate(({ session }) => session.defaultSession.disableNetworkEmulation())
+  }
+
   if (everythingFixture) {
+    await mainInput.fill('找fhsearchqa')
     for (const name of ['安装器', '卸载器', '辅助程序', '便携程序']) {
       await settings.getByText(name, { exact: true }).waitFor()
     }
     await settings.getByRole('button', { name: '添加为应用' }).click()
     await settings.getByText('已添加为应用。').waitFor()
     await settingsTab.click()
-    await settings.getByRole('region', { name: '已添加应用' }).getByText('fhsearchqa-portable', { exact: true }).waitFor()
+    const saved = settings.getByRole('region', { name: '已添加应用' })
+    await saved.getByText('fhsearchqa-portable', { exact: true }).waitFor()
+    await saved.getByRole('button', { name: '编辑别名' }).click()
+    await saved.getByRole('textbox', { name: '应用别名（每行一个）' }).fill('测试便携应用')
+    await saved.getByRole('button', { name: '保存别名' }).click()
+    await saved.getByText('别名 · 测试便携应用').waitFor()
+    await autoOpen.click()
+    await settings.locator('[aria-label="自动打开唯一应用"][aria-checked="true"]').waitFor()
     await searchTab.click()
+    if (localModel) {
+      await mainInput.fill('打开杀戮尖塔2')
+      await mainInput.press('Enter')
+      await settings.getByText('SlayTheSpire2.exe', { exact: true }).waitFor()
+      assert.equal(await settings.getByText('SlayTheSpire.exe', { exact: true }).count(), 0)
+      assert.equal(await settings.getByText(/^已打开 /u).count(), 0)
+      assert.equal(await settings.getByText('Windows 无法打开该目标。').count(), 0)
+      console.log('PASS model-only aliases display even a unique portable app')
+    }
     await rm(portableApp)
     await writeFile(movedApp, 'moved fixture')
-    await mainInput.fill('fhsearchqa-portable')
+    await mainInput.fill('测试便携应用')
     await settings.getByText(/路径已失效/u).waitFor()
     await application.evaluate(({ dialog }, path) => {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] })
@@ -158,10 +211,10 @@ try {
   }
 
   if (process.env.FASTHELPER_TEST_LAUNCH === '1') {
-    assert.equal(execFileSync('tasklist.exe', ['/NH', '/FI', 'IMAGENAME eq CalculatorApp.exe'], { encoding: 'utf8' })
-      .includes('CalculatorApp.exe'), false, 'close Calculator before running the launch check')
-    await input.fill('打开计算器')
-    await input.press('Enter')
+    assert.ok(localModel && everythingFixture, 'launch verification requires a local model and ready file index')
+    await mainInput.fill('打开计算器')
+    await mainInput.press('Enter')
+    await settings.getByText(/^已打开 (计算器|Calculator)/u).waitFor()
     const deadline = Date.now() + 12_000
     while (true) {
       const processes = execFileSync('tasklist.exe', ['/NH', '/FI', 'IMAGENAME eq CalculatorApp.exe'], { encoding: 'utf8' })
@@ -170,7 +223,8 @@ try {
       await new Promise((res) => setTimeout(res, 300))
     }
     console.log('PASS explicit unique command starts Windows Calculator')
-  } else await launcher.getByRole('button', { name: '关闭' }).click()
+  }
+  await launcher.getByRole('button', { name: '关闭' }).click()
 
   await settings.getByRole('link', { name: '功能管理', exact: true }).click()
   await settings.getByRole('button', { name: '移除快速搜索' }).click()

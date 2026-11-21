@@ -2,11 +2,11 @@ import { createHash, createPublicKey, verify } from 'node:crypto'
 import { access, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { utilityProcess, type UtilityProcess } from 'electron'
-import type { Intent } from '../shared/intent'
+import type { SearchPlan } from '../shared/search-plan'
 import type { InstalledPlugin, PluginPage, PluginServiceAction, PluginServiceState } from '../shared/contracts'
 import { pluginApiVersion, searchPluginId, type PluginResult, type WorkerReply, type WorkerRequest } from '../shared/plugin-contract'
 
-type PluginManifest = Omit<InstalledPlugin, 'services'> & { api: typeof pluginApiVersion; worker: string }
+type PluginManifest = Omit<InstalledPlugin, 'services' | 'toggles'> & { api: typeof pluginApiVersion; worker: string }
 type Request = WorkerRequest extends infer Message
   ? Message extends WorkerRequest ? Omit<Message, 'id'> : never : never
 const packageLimit = 2_000_000
@@ -32,10 +32,14 @@ export class SearchPlugin {
 
   installed(): boolean { return !!this.payload }
   installing(): boolean { return this.busy }
-  descriptor(): InstalledPlugin | null {
+  descriptor(readToggle: (key: string, defaultValue: boolean) => boolean): InstalledPlugin | null {
     if (!this.payload) return null
     const { api: _api, worker: _worker, ...plugin } = this.payload
-    return { ...plugin, services: { ...this.services } }
+    const toggles = plugin.pages.flatMap((page) => page.view === 'settings' ? page.toggles ?? [] : [])
+    return {
+      ...plugin, services: { ...this.services },
+      toggles: Object.fromEntries(toggles.map((item) => [item.id, readToggle(item.id, item.default)])),
+    }
   }
 
   async init(enabled: boolean): Promise<void> {
@@ -136,8 +140,9 @@ export class SearchPlugin {
     if (everythingEnabled) await this.service('everything', 'check')
   }
 
-  async query(intent: Intent, everything: boolean, signal: AbortSignal): Promise<PluginResult> {
-    return await this.call({ method: 'search', intent, everything }, signal) ?? { candidates: [], sources: [] }
+  async query(plan: SearchPlan, verificationName: string | undefined, everything: boolean, signal: AbortSignal): Promise<PluginResult> {
+    return await this.call({ method: 'search', plan, verificationName, everything }, signal)
+      ?? { candidates: [], sources: [], complete: false }
   }
 
   private validate(bytes: Buffer): PluginManifest {
@@ -229,6 +234,12 @@ function validPages(value: unknown): value is PluginPage[] {
     if (page.collections !== undefined && (!Array.isArray(page.collections) || page.collections.length > 4
       || !page.collections.every((item) => item?.view === 'saved-applications' && /^[a-z][a-z0-9-]{0,31}$/u.test(item.id)
         && typeof item.title === 'string' && item.title.length <= 80))) return false
+    if (page.toggles !== undefined && (!Array.isArray(page.toggles) || page.toggles.length > 8
+      || !page.toggles.every((item) => item && /^[a-z][a-z0-9-]{0,31}$/u.test(item.id)
+        && typeof item.title === 'string' && item.title.length <= 80
+        && typeof item.description === 'string' && item.description.length <= 240
+        && typeof item.default === 'boolean')
+      || new Set(page.toggles.map(({ id }) => id)).size !== page.toggles.length)) return false
   }
   return true
 }

@@ -1,6 +1,6 @@
 import { join, win32 } from 'node:path'
-import type { Intent } from '../../src/shared/intent'
 import { normalizeName } from '../../src/shared/intent'
+import { toFileSearch, type SearchPlan } from '../../src/shared/search-plan'
 import type { Candidate, PluginResult, WorkerReply, WorkerRequest } from '../../src/shared/plugin-contract'
 import type { SearchSource } from '../../src/shared/contracts'
 import { accessibleEntry, canOpenFile, classifyFile } from '../../src/shared/file-results'
@@ -13,35 +13,43 @@ const parent = (process as typeof process & {
 }).parentPort
 const directory = process.argv.at(-1)
 if (!parent || !directory) throw new Error('快速搜索需要由 fasthelper 启动。')
-const catalog = new ApplicationCatalog(join(directory, 'application-catalog-v2.json'))
+const catalog = new ApplicationCatalog(join(directory, 'application-catalog-v3.json'))
 const everything = new Everything(join(directory, 'everything'), (state) => parent.postMessage({ event: 'service', service: 'everything', state }))
 const jobs = new Map<number, AbortController>()
 
-async function search(intent: Intent, useEverything: boolean, signal: AbortSignal): Promise<PluginResult> {
+async function search(plan: SearchPlan, verificationName: string | undefined, useEverything: boolean, signal: AbortSignal): Promise<PluginResult> {
   await everything.setEnabled(useEverything)
-  const noApps: { exact: WindowsApp[]; candidates: WindowsApp[]; queried: boolean } = {
-    exact: [], candidates: [], queried: false,
-  }
-  const appSearch = intent.kind === 'find_file' ? Promise.resolve(noApps)
-    : catalog.find(intent.query, intent.kind === 'open_app').then((apps) => ({ ...apps, queried: true })).catch(() => noApps)
-  const fileSearch = everything.find(intent.query, signal, intent.kind === 'open_app').then(async (result) => {
-    if (result !== null) return { files: result, source: 'everything' as const }
+  const searchApps = plan.scope !== 'files' && !plan.extension && !plan.directory && !plan.modified
+  const appSearch = searchApps
+    ? Promise.all(plan.terms.map((term) => catalog.find(term, plan.scope === 'apps'))).catch(() => undefined)
+    : Promise.resolve(undefined)
+  const requested = toFileSearch(plan)
+  const fileSearch = everything.find(requested, signal).then(async (result) => {
+    if (result !== null) return { ...result, source: 'everything' as const }
     const fallbackReason = everything.fallbackReason()
-    if (intent.kind === 'open_app') return { files: [], fallbackReason }
+    signal.throwIfAborted()
     try {
-      return { files: await findFiles(intent.query, signal), source: 'windows-search' as const, fallbackReason }
+      return { ...await findFiles(requested, signal), source: 'windows-search' as const, fallbackReason }
     } catch {
-      return { files: [], fallbackReason: `${fallbackReason}，Windows Search 也未能完成查询` }
+      return { files: [], source: undefined, complete: false, fallbackReason: fallbackReason + '，Windows Search 也未能完成查询' }
     }
   })
-  const [apps, { files, source, fallbackReason }] = await Promise.all([appSearch, fileSearch])
+  const [apps, indexed] = await Promise.all([appSearch, fileSearch])
+  const { files, source, fallbackReason } = indexed
   signal.throwIfAborted()
-  const results: Candidate[] = apps.candidates
-    .filter(({ appId, launch }) => launch === 'aumid' || classifyFile(appId) === 'portable')
+  const registered = new Map<string, WindowsApp>()
+  for (const app of apps?.flat() ?? []) {
+    if (app.launch === 'aumid' || classifyFile(app.appId) === 'portable') registered.set(app.appId.toLowerCase(), app)
+  }
+  const entries = [...registered.values()]
+  const results: Candidate[] = (await Promise.all(entries.slice(0, 40).map(async (entry) =>
+    entry.launch === 'aumid' || await accessibleEntry(entry.appId) ? entry : null)))
+    .filter((entry) => entry !== null)
     .map((entry) => ({ kind: 'app', title: entry.name, target: entry.appId, launch: entry.launch,
-      detail: apps.candidates.some(({ name, appId }) => appId !== entry.appId && normalizeName(name) === normalizeName(entry.name))
+      detail: entries.some(({ name, appId }) => appId !== entry.appId && normalizeName(name) === normalizeName(entry.name))
         ? entry.appId : entry.launch === 'path' ? entry.appId : 'Windows 应用',
-      canOpen: true, exact: apps.exact.includes(entry), source: 'apps',
+      canOpen: true, verifiedName: verificationName !== undefined && normalizeName(entry.name) === normalizeName(verificationName),
+      source: 'apps',
     }))
   // Name matches from a whole-disk index are grouped by what the user can do with them.
   const candidateFiles = await Promise.all(files.map(async (file): Promise<Candidate | null> => {
@@ -54,17 +62,19 @@ async function search(intent: Intent, useEverything: boolean, signal: AbortSigna
       canAdd: kind === 'portable' && /\.exe$/iu.test(file.path), source,
     }
   }))
-  const registered = new Set(results.map(({ target }) => target.toLowerCase()))
-  const seen = new Set(registered)
+  const seen = new Set(results.map(({ target }) => target.toLowerCase()))
   for (const item of candidateFiles) {
     if (!item || seen.has(item.target.toLowerCase())) continue
     seen.add(item.target.toLowerCase())
     results.push(item)
   }
   const sources: SearchSource[] = []
-  if (apps.queried) sources.push('apps')
+  if (apps) sources.push('apps')
   if (source) sources.push(source)
-  return { candidates: results.slice(0, 40), sources, fallbackReason }
+  return {
+    candidates: results.slice(0, 40), sources, fallbackReason,
+    complete: indexed.complete && (!searchApps || apps !== undefined) && entries.length <= 40 && results.length <= 40,
+  }
 }
 
 parent.on('message', ({ data }) => {
@@ -85,7 +95,7 @@ parent.on('message', ({ data }) => {
           case 'cancel': everything.cancel(); return
           case 'open': everything.open(); return
         }
-      case 'search': return search(data.intent, data.everything, controller.signal)
+      case 'search': return search(data.plan, data.verificationName, data.everything, controller.signal)
     }
   })().then(
     (value) => parent.postMessage({ id: data.id, ok: true, value }),

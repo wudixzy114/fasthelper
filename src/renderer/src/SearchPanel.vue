@@ -87,8 +87,8 @@ watch(query, (value) => {
   loading.value = false
   submitted.value = false
   selected.value = -1
+  void api.closeSearch(props.pluginId).catch(() => undefined)
   if (value.trim()) timer = setTimeout(() => void search(false), 125)
-  else void api.closeSearch(props.pluginId).catch(() => undefined)
 }, { flush: 'sync' })
 
 watch(() => results.value.length, (count) => {
@@ -102,6 +102,7 @@ async function search(commit: boolean) {
   submitted.value = commit
   loading.value = true
   error.value = ''
+  if (commit) feedback.value = ''
   selected.value = -1
   results.value = []
   notices.value = []
@@ -220,6 +221,7 @@ function submit() {
     <slot name="status" />
     <div v-if="error || store.error" class="launcher-feedback error" role="alert">{{ error || store.error }}</div>
     <p v-else-if="feedback" class="launcher-feedback" role="status">{{ feedback }}</p>
+    <p v-if="notices.length" class="launcher-feedback" role="status">{{ notices.join(' ') }}</p>
     <ul v-if="groupedResults.length" class="results" aria-label="搜索结果">
       <template v-for="{ item, index, heading } in groupedResults" :key="item.id">
         <li v-if="heading" class="result-group" role="presentation">{{ heading }}</li>
@@ -245,9 +247,8 @@ function submit() {
       </template>
     </ul>
     <div v-else-if="loading" class="launcher-feedback" role="status"><LoaderCircle :size="17" class="spinning" /> 正在搜索…</div>
-    <div v-else-if="notices.length" class="launcher-feedback" role="status">{{ notices.join(' ') }}</div>
     <div v-else-if="results.length" class="launcher-feedback" role="status">当前分类没有结果。</div>
-    <div v-else-if="submitted" class="launcher-feedback" role="status">没有匹配结果。试试完整应用名，或者用「找」开头来搜索文件。</div>
+    <div v-else-if="submitted && !notices.length && !feedback && !error" class="launcher-feedback" role="status">没有匹配结果。试试完整应用名，或者用「找」开头来搜索文件。</div>
     <footer v-if="compact" class="launcher-footer"><span class="launcher-keys"><kbd><CornerDownLeft :size="12" /></kbd> 执行 <kbd>Esc</kbd> 关闭</span></footer>
   </section>
 </template>

@@ -214,7 +214,10 @@ progress::-webkit-progress-value { border-radius: 10px; background: var(--accent
 .plugin-service .service-error { color: #a13232; }
 .service-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
 .saved-application-list { margin: 6px 0 0; padding: 0; list-style: none; }
-.saved-application-list li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid #e6ebe3; }
+.saved-application-list li { padding: 8px 0; border-top: 1px solid #e6ebe3; }
+.saved-application-row { display: flex; align-items: center; gap: 8px; }
+.saved-alias-editor { display: grid; gap: 6px; margin-top: 8px; }
+.saved-alias-editor textarea { width: 100%; padding: 8px; font: inherit; resize: vertical; border: 1px solid #dfe5dc; border-radius: 6px; }
 .saved-application-list strong { font-size: 13px; }
 .saved-application-list p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .result-group { padding: 6px 8px 3px; font-size: 11px; font-weight: 650; color: var(--muted); }

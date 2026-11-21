@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process'
-import { join, win32 } from 'node:path'
-import { toFileQuery } from '../../src/shared/intent'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { localPath } from '../../src/shared/file-results'
+import type { FileSearch } from '../../src/shared/search-plan'
 
 export type WindowsApp = { name: string; appId: string; launch: 'aumid' | 'path' }
 export type WindowsFile = { name: string; path: string; date?: string }
@@ -50,10 +52,26 @@ ConvertTo-Json -InputObject $items -Compress
 const filesScript = `
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
 if ((Get-Service WSearch).Status -ne 'Running') { throw 'Windows Search is stopped.' }
-$where = "System.Kind <> 'folder'"
-if ($request.name) {
-  $name = ([string]$request.name).Replace("'", "''").Replace('[', '[[]').Replace('%', '[%]').Replace('_', '[_]')
-  $where += " AND System.FileName LIKE '%$name%'"
+$scope = 'file:'
+if ($request.directory) {
+  $scope += $request.directory.Replace('\\', '/').Replace("'", "''")
+}
+$where = "SCOPE='$scope' AND System.Kind <> 'folder'"
+function Escape-Like([string]$value) {
+  $value.Replace("'", "''").Replace('[', '[[]').Replace('%', '[%]').Replace('_', '[_]')
+}
+if ($request.terms) {
+  $names = foreach ($term in $request.terms) {
+    $name = (($term -split '\\s+' | ForEach-Object { Escape-Like $_ }) -join '%')
+    "System.FileName LIKE '%$name%'"
+  }
+  $where += " AND (" + ($names -join ' OR ') + ")"
+}
+$ext = if ($request.extension) { @($request.extension) }
+  elseif ($request.applicationsOnly) { @('exe', 'lnk', 'msi', 'msix', 'appx', 'msp', 'appxbundle', 'msixbundle') }
+if ($ext) {
+  $extensions = ($ext | ForEach-Object { "System.FileExtension = '." + (Escape-Like $_) + "'" }) -join ' OR '
+  $where += " AND ($extensions)"
 }
 if ($request.after) {
   $after = ([datetime]$request.after).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
@@ -65,14 +83,14 @@ try {
   $connection.Open()
   $command = $connection.CreateCommand()
   $command.CommandTimeout = 4
-  $command.CommandText = "SELECT TOP 15 System.FileName, System.ItemPathDisplay, System.DateModified FROM SystemIndex WHERE $where ORDER BY System.DateModified DESC"
+  $command.CommandText = "SELECT TOP 15 System.FileName, System.ItemUrl, System.DateModified FROM SystemIndex WHERE $where ORDER BY System.DateModified DESC"
   $reader = $command.ExecuteReader()
   $items = @(
     while ($reader.Read()) {
       if ($reader.IsDBNull(0) -or $reader.IsDBNull(1)) { continue }
       $date = $null
       if (!$reader.IsDBNull(2)) { $date = ([datetime]$reader.GetValue(2)).ToString('o') }
-      @{ name = $reader.GetString(0); path = $reader.GetString(1); date = $date }
+      @{ name = $reader.GetString(0); url = $reader.GetString(1); date = $date }
     }
   )
   ConvertTo-Json -InputObject $items -Compress
@@ -116,13 +134,15 @@ export async function scanApplications(): Promise<WindowsApp[]> {
   ).filter((entry) => entry.name && !entry.name.startsWith('ms-resource:'))
 }
 
-export async function findFiles(query: string, signal: AbortSignal): Promise<WindowsFile[]> {
-  const entries = await runScript(filesScript, toFileQuery(query), signal)
+export async function findFiles(query: FileSearch, signal: AbortSignal): Promise<{ files: WindowsFile[]; complete: boolean }> {
+  const entries = await runScript(filesScript, query, signal)
   if (!Array.isArray(entries)) throw new Error('文件搜索结果格式不正确。')
-  return entries.filter((entry) =>
-    typeof entry?.name === 'string'
-    && typeof entry?.path === 'string'
-    && /^[a-z]:[\\/]/iu.test(entry.path)
-    && win32.isAbsolute(entry.path),
-  )
+  const files = entries.flatMap((entry): WindowsFile[] => {
+    if (typeof entry?.name !== 'string' || typeof entry.url !== 'string') return []
+    try {
+      const path = fileURLToPath(entry.url)
+      return localPath(path) ? [{ path, name: entry.name, date: entry.date ?? undefined }] : []
+    } catch { return [] }
+  })
+  return { files, complete: entries.length < 15 }
 }

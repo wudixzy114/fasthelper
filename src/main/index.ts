@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { readFile } from 'node:fs/promises'
 import { features, ipc, modelOptions, type ActionResponse, type ModelId, type PluginServiceAction, type SettingsSnapshot } from '../shared/contracts'
 import { searchPluginId } from '../shared/plugin-contract'
-import { SettingsStore, isFeatureStatus } from './settings'
+import { SettingsStore, isFeatureStatus, sanitizeAliases } from './settings'
 import { ModelInstaller } from './models'
 import { LanguageModel } from './language-model'
 import { SearchService } from './search'
@@ -46,8 +46,12 @@ function activeModel(): ModelId | null {
   return modelOptions.find(({ id }) => installer.installed(id))?.id ?? null
 }
 
+function pluginDescriptor() {
+  return plugin.descriptor((key, defaultValue) => store.pluginToggle(searchPluginId, key, defaultValue))
+}
+
 function getSnapshot(): SettingsSnapshot {
-  const descriptor = plugin.descriptor()
+  const descriptor = pluginDescriptor()
   return {
     features: { 'quick-search': plugin.installed()
       ? store.snapshot()['quick-search'] === 'enabled' ? 'enabled' : 'disabled' : 'available' },
@@ -217,19 +221,37 @@ function registerHandlers() {
     publishSettings()
     return getSnapshot()
   })
+  handle(ipc.pluginToggle, async (id, toggle, enabled) => {
+    const declared = pluginDescriptor()?.pages.some((page) => page.view === 'settings'
+      && page.toggles?.some((entry) => entry.id === toggle))
+    if (id !== searchPluginId || typeof toggle !== 'string' || typeof enabled !== 'boolean'
+      || !declared || changingPlugin || store.snapshot()[searchPluginId] !== 'enabled') {
+      throw new Error('该插件设置不可用。')
+    }
+    await store.setPluginToggle(id, toggle, enabled)
+    publishSettings()
+    return getSnapshot()
+  })
   handle(ipc.update, async (action) => {
     if (action === 'check') await updates.check()
     else if (action === 'install') updates.install()
     else throw new Error('更新操作无效。')
   })
-  handleWindow(ipc.savedApplication, (sender, id, action) => {
+  handle(ipc.savedApplication, (id, action) => {
     if (typeof id !== 'string' || id.length !== 36 || (action !== 'relocate' && action !== 'remove')) {
       throw new Error('已添加应用操作无效。')
     }
-    return search.manageSaved(sender.webContents.id, id, action)
+    return search.manageSaved(id, action)
+  })
+  handle(ipc.savedAliases, (id, value) => {
+    const aliases = sanitizeAliases(value)
+    if (typeof id !== 'string' || id.length !== 36 || !aliases || changingPlugin) {
+      throw new Error('已添加应用的别名无效。')
+    }
+    return search.saveAliases(id, aliases)
   })
   handle(ipc.pluginCollection, (id, collection) => {
-    const allowed = plugin.descriptor()?.pages.some((page) => page.view === 'settings'
+    const allowed = pluginDescriptor()?.pages.some((page) => page.view === 'settings'
       && page.collections?.some((entry) => entry.id === collection && entry.view === 'saved-applications'))
     if (id !== searchPluginId || !allowed || store.snapshot()[searchPluginId] !== 'enabled') {
       throw new Error('该插件列表不可用。')
@@ -308,7 +330,7 @@ function registerHandlers() {
       throw new Error('搜索内容无效。')
     }
     if (changingPlugin) return { results: [], sources: [], notices: ['快速搜索正在更新设置，请稍后重试。'] }
-    return search.query(sender.webContents.id, query, commit)
+    return search.query(sender.webContents.id, { text: query, stage: commit ? 'submit' : 'preview' })
   })
   handleWindow(ipc.closeSearch, (sender, id) => {
     if (id === searchPluginId) search.clear(sender.webContents.id)

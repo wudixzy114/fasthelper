@@ -51,9 +51,10 @@ export type PluginServiceState = {
 }
 export type PluginService = { id: string; title: string; actions: PluginServiceAction[] }
 export type PluginCollection = { id: string; title: string; view: 'saved-applications' }
+export type PluginToggle = { id: string; title: string; description: string; default: boolean }
 export type PluginPage = { id: string; title: string } & (
   | { view: 'search' }
-  | { view: 'settings'; services: PluginService[]; collections?: PluginCollection[] }
+  | { view: 'settings'; services: PluginService[]; collections?: PluginCollection[]; toggles?: PluginToggle[] }
 )
 export type InstalledPlugin = {
   id: FeatureId
@@ -63,6 +64,7 @@ export type InstalledPlugin = {
   pages: PluginPage[]
   compactPage?: string
   services: Record<string, PluginServiceState>
+  toggles: Record<string, boolean>
 }
 export type SearchSource = 'apps' | 'saved-apps' | 'everything' | 'windows-search'
 export const searchSourceLabels: Record<SearchSource, string> = {
@@ -76,7 +78,7 @@ export type UpdateState = {
   percent?: number
 }
 export type SearchKind = 'app' | 'file' | 'folder' | 'portable' | 'installer' | 'uninstaller' | 'helper'
-export type SavedApplication = { id: string; name: string; path: string }
+export type SavedApplication = { id: string; name: string; path: string; aliases?: string[] }
 export type SavedApplicationItem = SavedApplication & { missing: boolean }
 
 export type ModelState =
@@ -127,8 +129,10 @@ export interface FasthelperApi {
   onSettings(listener: (settings: SettingsSnapshot) => void): () => void
   setFeature(id: FeatureId, status: FeatureStatus): Promise<SettingsSnapshot>
   managePluginService(id: FeatureId, service: string, action: PluginServiceAction): Promise<SettingsSnapshot>
+  setPluginToggle(id: FeatureId, toggle: string, enabled: boolean): Promise<SettingsSnapshot>
   manageUpdate(action: 'check' | 'install'): Promise<void>
   manageSavedApplication(id: string, action: 'relocate' | 'remove'): Promise<ActionResponse>
+  setSavedApplicationAliases(id: string, aliases: string[]): Promise<ActionResponse>
   listPluginCollection(id: FeatureId, collection: string): Promise<SavedApplicationItem[]>
   manageModel(id: ModelId, action: ModelAction): Promise<SettingsSnapshot>
   testModel(): Promise<ActionResponse>
@@ -147,9 +151,11 @@ export const ipc = {
   settingsChanged: 'settings:changed',
   setFeature: 'settings:feature',
   pluginService: 'plugins:service',
+  pluginToggle: 'plugins:toggle',
   closeSearch: 'search:close',
   update: 'app:update',
   savedApplication: 'search:saved-app',
+  savedAliases: 'search:saved-aliases',
   pluginCollection: 'plugins:collection',
   manageModel: 'models:manage',
   testModel: 'models:test',

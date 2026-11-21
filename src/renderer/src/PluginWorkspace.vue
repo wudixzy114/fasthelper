@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Tab, TabGroup, TabList, TabPanel, TabPanels } from '@headlessui/vue'
+import { Switch, Tab, TabGroup, TabList, TabPanel, TabPanels } from '@headlessui/vue'
+import type { FeatureId } from '../../shared/contracts'
 import PluginServicePanel from './PluginServicePanel.vue'
 import SearchPanel from './SearchPanel.vue'
 import PluginSavedApplications from './PluginSavedApplications.vue'
@@ -15,6 +16,19 @@ const plugin = computed(() => store.snapshot?.plugins.find((entry) => entry.id =
 const enabled = computed(() => !!plugin.value && store.snapshot?.features[plugin.value.id] === 'enabled')
 const pageIndex = computed(() => Math.max(0, plugin.value?.pages.findIndex((page) => page.id === route.params.pageId) ?? 0))
 const services = computed(() => plugin.value?.pages.flatMap((page) => page.view === 'settings' ? page.services : []) ?? [])
+const savingToggle = ref(false)
+const toggleError = ref('')
+
+async function setToggle(id: FeatureId, key: string, value: boolean) {
+  if (savingToggle.value) return
+  savingToggle.value = true
+  toggleError.value = ''
+  try {
+    await api.setPluginToggle(id, key, value)
+  } catch {
+    toggleError.value = '无法保存插件设置，请重试。'
+  } finally { savingToggle.value = false }
+}
 
 function selectPage(index: number, replace = false) {
   const entry = plugin.value
@@ -56,6 +70,18 @@ watch([() => plugin.value?.id, enabled], ([id, active]) => {
               </SearchPanel>
             </template>
             <template v-else>
+              <section v-for="entry in page.toggles" :key="entry.id" class="plugin-service">
+                <header class="plugin-service-header">
+                  <div>
+                    <h2>{{ entry.title }}</h2>
+                    <p>{{ entry.description }}</p>
+                  </div>
+                  <Switch :model-value="plugin.toggles[entry.id] ?? entry.default" :disabled="savingToggle"
+                    :aria-label="entry.title" class="toggle"
+                    @update:model-value="setToggle(plugin.id, entry.id, $event)"><span /></Switch>
+                </header>
+                <p v-if="toggleError" role="status" class="service-error">{{ toggleError }}</p>
+              </section>
               <PluginServicePanel v-for="entry in page.services" :key="entry.id" :plugin-id="plugin.id"
                 :service="entry" :state="plugin.services[entry.id]" />
               <PluginSavedApplications v-for="entry in page.collections" :key="entry.id" :plugin-id="plugin.id"

@@ -39,9 +39,9 @@ export class ApplicationCatalog {
     await this.load()
   }
 
-  async find(query: string, includeMentions = false): Promise<{ exact: WindowsApp[]; candidates: WindowsApp[] }> {
+  async find(query: string, includeMentions = false): Promise<WindowsApp[]> {
     const needle = normalizeName(query)
-    if (!needle) return { exact: [], candidates: [] }
+    if (!needle) return []
     const entries = await this.load()
     const exact: WindowsApp[] = []
     const partial: WindowsApp[] = []
@@ -51,7 +51,7 @@ export class ApplicationCatalog {
       else if (keys.some((key) => key.includes(needle))) partial.push(entry)
     }
     if (exact.length || partial.length || !includeMentions) {
-      return { exact, candidates: [...exact, ...partial].slice(0, 8) }
+      return [...exact, ...partial]
     }
 
     const terms = new Set(entries.flatMap(namesOf).filter((name) => mentioned(needle, name)))
@@ -60,7 +60,7 @@ export class ApplicationCatalog {
     const related = entries.filter((entry) =>
       !direct.includes(entry) && namesOf(entry).some((name) => mentionedTerms.some((term) => mentioned(name, term))))
     // A name mentioned inside a longer request can surface candidates only.
-    return { exact: [], candidates: [...direct, ...related].slice(0, 8) }
+    return [...direct, ...related]
   }
 
   private async load(): Promise<WindowsApp[]> {
@@ -88,10 +88,8 @@ export class ApplicationCatalog {
     const keys = new Set<string>()
     const unique = entries.filter((entry) => {
       const id = entry.appId.toLowerCase()
-      const name = normalizeName(entry.name)
-      if (keys.has(id) || (entry.launch === 'path' && keys.has(name))) return false
+      if (keys.has(id)) return false
       keys.add(id)
-      keys.add(name)
       return true
     })
     this.apps = unique.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))

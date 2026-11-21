@@ -4,26 +4,32 @@ import { createServer, type AddressInfo } from 'node:net'
 import { availableParallelism } from 'node:os'
 import { dirname } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import type { Intent } from '../shared/intent'
 import type { SearchKind, SearchResult } from '../shared/contracts'
-import { normalizeName } from '../shared/intent'
+import { validateSearchPlan, type SearchPlan } from '../shared/search-plan'
 import type { LocalModelConfiguration } from './models'
 import { maxDecisionCandidates, scoreCandidates, tokenizeAnswerSlots } from './semif'
 
 type Endpoint = { url: string; key: string; child: ChildProcess; signal: AbortSignal; labelIds?: number[] }
 type ModelPath = '/v1/chat/completions' | '/apply-template' | '/completion' | '/tokenize'
 
-const systemPrompt = `判断用户是否明确请求打开应用或搜索文件。原样摘录最具体的应用名或文件关键词，省略客套、日期和修饰语。
-只输出 JSON。kind 取 open_app、find_file 或 unknown，query 是从原文摘取的目标，unknown 时为空。否定句、闲聊、复合请求用 unknown。
-示例：“我需要用一下记事本” → {"kind":"open_app","query":"记事本"}。“找一下上周开会用的预算表” → {"kind":"find_file","query":"预算表"}。`
+const systemPrompt = `你是 Windows 本地搜索的查询解析器。只输出 JSON。动作 action 为 search、open_app 或 clarify。用户明确要打开或启动一个应用时用 open_app 且 scope 为 apps；查找或只输入名称时用 search。缺少明确的目标或有多个不同的请求时用 clarify 和空 terms。scope 为 apps（应用）、files（文件）或 all（不确定）。
+terms 是至多三个可用于匹配文件名或应用名的短词，去除礼貌语、动作和筛选条件。保留目标原名；知道官方英文名时同时给出英文名或常见可执行文件名。名称包含版本号时，每个搜索词都保留对应的数字。extension 只填明确提到的文件后缀；directory 只填原文中的绝对 Windows 路径；modified 只填明确指定的 today、yesterday、this_week 或 last_week；省略未指定字段。
+例：“杀戮尖塔” → {"action":"search","scope":"apps","terms":["杀戮尖塔","Slay the Spire"]}。
+例：“启动杀戮尖塔 2” → {"action":"open_app","scope":"apps","terms":["杀戮尖塔2","Slay the Spire 2"]}。
+例：“找上周的预算表 PDF” → {"action":"search","scope":"files","terms":["预算表"],"extension":"pdf","modified":"last_week"}。
+例：“在 D:\\Docs 里找昨天的 report” → {"action":"search","scope":"files","terms":["report"],"directory":"D:\\\\Docs","modified":"yesterday"}。`
 
 const schema = {
   type: 'object',
   properties: {
-    kind: { enum: ['open_app', 'find_file', 'unknown'] },
-    query: { type: 'string' },
+    action: { enum: ['search', 'open_app', 'clarify'] },
+    scope: { enum: ['apps', 'files', 'all'] },
+    terms: { type: 'array', items: { type: 'string' }, maxItems: 3 },
+    extension: { type: 'string' },
+    directory: { type: 'string' },
+    modified: { enum: ['today', 'yesterday', 'this_week', 'last_week'] },
   },
-  required: ['kind', 'query'],
+  required: ['action', 'scope', 'terms'],
   additionalProperties: false,
 }
 
@@ -47,26 +53,21 @@ export class LanguageModel {
 
   constructor(private readonly configuration: () => LocalModelConfiguration | null) {}
 
-  async interpret(text: string, signal: AbortSignal): Promise<Intent | null> {
+  async interpret(text: string, signal: AbortSignal): Promise<SearchPlan | null> {
     const model = this.configuration()
     if (!model) return null
+    signal.throwIfAborted()
     const endpoint = await this.start(model)
     const body = await this.request(endpoint, '/v1/chat/completions', {
       messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }],
-      response_format: { type: 'json_schema', json_schema: { name: 'intent', strict: true, schema } },
+      response_format: { type: 'json_schema', json_schema: { name: 'search_plan', strict: true, schema } },
       chat_template_kwargs: { enable_thinking: false },
-      max_tokens: 96,
-      temperature: 0.15,
+      max_tokens: 192,
+      temperature: 0,
     }, this.budget(model, signal)) as { choices?: { message?: { content?: unknown } }[] }
     const content = body?.choices?.[0]?.message?.content
     if (typeof content !== 'string') throw new Error('本地模型没有返回有效结果。')
-    const result = JSON.parse(content)
-    const query = typeof result?.query === 'string' ? result.query.trim() : ''
-    if (!query || !normalizeName(text).includes(normalizeName(query))) return null
-    if (result.kind !== 'open_app' && result.kind !== 'find_file') return null
-    const searchQuery = result.kind === 'find_file' && text.includes('上周') && !query.startsWith('上周')
-      ? `上周的${query}` : query
-    return { kind: result.kind, query: searchQuery, explicit: false }
+    return validateSearchPlan(JSON.parse(content), text)
   }
 
   async rank<T extends { title: string; detail: string; kind: SearchKind }>(
@@ -74,6 +75,7 @@ export class LanguageModel {
   ): Promise<{ results: (T & Pick<SearchResult, 'match'>)[]; uncertain: boolean } | null> {
     const model = this.configuration()
     if (!model || candidates.length < 2) return null
+    signal.throwIfAborted()
     const endpoint = await this.start(model)
     const budget = this.budget(model, signal)
     if (!endpoint.labelIds) {
@@ -86,7 +88,7 @@ export class LanguageModel {
       endpoint.labelIds,
       text,
       shortlist.map(({ title, detail, kind }) => ({
-        title, description: `${kind === 'app' ? '应用' : '文件'} · ${detail.slice(-54)}`,
+        title, description: `${kind === 'app' || kind === 'portable' ? '应用' : '文件'} · ${detail.slice(-54)}`,
       })),
     )
     if (!decision) return null

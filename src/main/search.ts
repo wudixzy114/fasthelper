@@ -1,16 +1,30 @@
 import { randomUUID } from 'node:crypto'
 import { dialog, shell } from 'electron'
-import { normalizeName, readIntent, type Intent } from '../shared/intent'
-import type { ActionResponse, SavedApplicationItem, SearchResponse, SearchResult, SearchSource } from '../shared/contracts'
+import { normalizeName } from '../shared/intent'
+import { confirmedOpenName, literalSearch, searchTerms, type SearchPlan, type SearchStage } from '../shared/search-plan'
+import type { ActionResponse, SavedApplicationItem, SearchResponse, SearchResult } from '../shared/contracts'
 import { accessibleEntry, canOpenFile, classifyFile } from '../shared/file-results'
-import { launchApplication } from './windows'
+import { launchApplication, registeredApplicationName } from './windows'
 import type { LanguageModel } from './language-model'
 import type { SearchPlugin } from './plugin-manager'
 import type { SettingsStore } from './settings'
-import type { Candidate } from '../shared/plugin-contract'
+import { autoOpenPreference, searchPluginId, type Candidate, type PluginResult } from '../shared/plugin-contract'
 
 type SearchItem = Candidate & Pick<SearchResult, 'missing' | 'savedId' | 'match'>
 type Session = { request: AbortController; targets: Map<string, SearchItem> }
+
+function isApplication(item: SearchItem): boolean {
+  return item.canOpen && !item.missing && (item.kind === 'app' || item.kind === 'portable')
+}
+
+function isSearchTarget(item: SearchItem, plan: SearchPlan): boolean {
+  if (item.missing) return false
+  const auxiliary = item.kind === 'installer' || item.kind === 'uninstaller' || item.kind === 'helper'
+  if (auxiliary) return !!plan.extension || plan.terms.some((term) => classifyFile(term + '.exe') === item.kind)
+  if (plan.scope === 'apps') return isApplication(item)
+  if (item.kind === 'file' || item.kind === 'folder') return true
+  return plan.scope === 'all' || !!plan.extension
+}
 
 export class SearchService {
   private readonly sessions = new Map<number, Session>()
@@ -22,7 +36,7 @@ export class SearchService {
   ) {}
 
   private enabled(): boolean {
-    return this.plugin.installed() && this.settings.snapshot()['quick-search'] === 'enabled'
+    return this.plugin.installed() && this.settings.snapshot()[searchPluginId] === 'enabled'
   }
 
   clear(id?: number): void {
@@ -35,56 +49,58 @@ export class SearchService {
     }
   }
 
-  async query(sessionId: number, input: string, commit: boolean): Promise<SearchResponse> {
+  async query(sessionId: number, input: { text: string; stage: SearchStage }): Promise<SearchResponse> {
     this.clear(sessionId)
     const request = new AbortController()
     const targets = new Map<string, SearchItem>()
     this.sessions.set(sessionId, { request, targets })
     const { signal } = request
     const response: SearchResponse = { results: [], notices: [], sources: [] }
-    const text = input.trim()
+    const text = input.text.trim()
     if (!text) return response
-    if (!this.enabled()) return { ...response, notices: ['请在设置中安装或启用「快速搜索」。'] }
+    if (!this.enabled()) return response
 
     try {
-      const intent = readIntent(text)
-      if (intent.kind === 'find_file' && !commit) return response
-      let found = await this.find(intent, signal)
-      let matches = found.items
+      const submitted = input.stage === 'submit'
+      const generated = submitted ? await this.language.interpret(text, signal).catch(() => null) : null
       signal.throwIfAborted()
-      const apps = matches.filter((item) => item.kind === 'app')
-      if (commit && intent.kind === 'open_app' && intent.explicit
-        && apps.length === 1 && apps[0].exact && !apps[0].missing) {
-        const result = await this.act(apps[0], 'open')
-        if (result.ok) return { ...response, sources: found.sources, fallbackReason: found.fallbackReason, opened: apps[0].title }
+      const plan = generated ?? literalSearch(text)
+      if (plan.action === 'clarify' || !plan.terms.length) {
+        return { ...response, notices: ['请提供应用名、版本或文件名，再试一次。'] }
+      }
+      const verificationName = confirmedOpenName(text, plan)
+      if (verificationName) plan.terms = searchTerms([verificationName, ...plan.terms])
+      const found = await this.find(plan, verificationName, signal)
+      signal.throwIfAborted()
+      let matches = found.items
+      const candidates = matches.filter((item) => isSearchTarget(item, plan))
+      const [unique] = candidates
+      const mayOpen = () => !signal.aborted && this.enabled()
+        && this.settings.pluginToggle(searchPluginId, autoOpenPreference, true)
+      if (verificationName && found.complete && candidates.length === 1 && unique.verifiedName && isApplication(unique) && mayOpen()) {
+        const name = unique.launch === 'aumid' ? await registeredApplicationName(unique.target, signal).catch(() => '') : verificationName
+        const result = normalizeName(name) === normalizeName(verificationName) && mayOpen()
+          ? await this.act(unique, 'open', mayOpen) : { ok: false as const, message: '应用状态已变化，请在结果中确认。' }
+        if (result.ok) return { ...response, sources: found.sources, fallbackReason: found.fallbackReason, opened: unique.title }
+        signal.throwIfAborted()
         response.notices.push(result.message)
       }
 
-      if (commit) {
-        const ranked = await this.language.rank(text, matches.filter((item) => !item.missing), signal).catch(() => null)
+      if (generated && candidates.length > 1) {
+        const ranked = await this.language.rank(text, candidates, signal).catch(() => null)
         signal.throwIfAborted()
-        if (ranked) matches = [...ranked.results, ...matches.filter((item) => item.missing)]
-        if (!matches.length || ranked?.uncertain) {
-          const refined = await this.language.interpret(text, signal).catch(() => null)
-          signal.throwIfAborted()
-          if (refined && (refined.kind !== intent.kind || normalizeName(refined.query) !== normalizeName(intent.query))) {
-            const alternative = await this.find({ ...refined, explicit: false }, signal)
-            signal.throwIfAborted()
-            if (alternative.items.length) {
-              found = alternative
-              const next = await this.language.rank(text, found.items.filter((item) => !item.missing), signal).catch(() => null)
-              matches = next ? [...next.results, ...found.items.filter((item) => item.missing)] : found.items
-            }
-          }
-        }
+        if (ranked) matches = [...ranked.results, ...matches.filter((item) => !candidates.includes(item))]
       }
       signal.throwIfAborted()
       if (!matches.length && !response.notices.length) {
-        response.notices.push('当前索引中没有匹配结果。请检查名称或索引范围。')
+        response.notices.push(found.sources.length
+          ? '当前索引中没有匹配结果。请检查名称或索引范围。' : '当前没有可用的搜索来源，请检查插件设置。')
+      } else if (plan.scope === 'apps' && matches.length && !candidates.length) {
+        response.notices.push('没有找到可打开的应用。下方保留相关条目。')
       }
-      response.results = matches.map(({ target, launch: _launch, exact: _exact, ...item }) => {
+      response.results = matches.map(({ target, launch, verifiedName: _verifiedName, ...item }) => {
         const id = randomUUID()
-        targets.set(id, { ...item, target, launch: _launch })
+        targets.set(id, { ...item, target, launch })
         return { ...item, id }
       })
       return { ...response, sources: found.sources, fallbackReason: found.fallbackReason }
@@ -95,12 +111,13 @@ export class SearchService {
   }
 
   async open(sessionId: number, id: string, action: 'open' | 'reveal' | 'add'): Promise<ActionResponse> {
-    const entry = this.sessions.get(sessionId)?.targets.get(id)
-    if (!entry || !this.enabled()) return { ok: false, message: '结果已失效，请重新搜索。' }
-    return this.act(entry, action)
+    const session = this.sessions.get(sessionId)
+    const entry = session?.targets.get(id)
+    if (!session || !entry || !this.enabled()) return { ok: false, message: '结果已失效，请重新搜索。' }
+    return this.act(entry, action, () => !session.request.signal.aborted && this.enabled())
   }
 
-  async manageSaved(sessionId: number, id: string, action: 'relocate' | 'remove'): Promise<ActionResponse> {
+  async manageSaved(id: string, action: 'relocate' | 'remove'): Promise<ActionResponse> {
     if (!this.enabled()) return { ok: false, message: '请先启用快速搜索。' }
     const app = this.settings.savedApplications().find((item) => item.id === id)
     if (!app) return { ok: false, message: '已添加的应用不存在。' }
@@ -115,9 +132,18 @@ export class SearchService {
       if (classifyFile(path) !== 'portable' || !await accessibleEntry(path)) {
         return { ok: false, message: '请选择可访问的应用程序。' }
       }
-      await this.settings.saveApplication({ ...app, path })
+      await this.settings.updateApplication(id, { path })
     }
-    this.clear(sessionId)
+    this.clear()
+    return { ok: true }
+  }
+
+  async saveAliases(id: string, aliases: string[]): Promise<ActionResponse> {
+    if (!this.enabled() || !this.settings.savedApplications().some((item) => item.id === id)) {
+      return { ok: false, message: '已添加的应用不存在。' }
+    }
+    await this.settings.updateApplication(id, { aliases })
+    this.clear()
     return { ok: true }
   }
 
@@ -127,36 +153,48 @@ export class SearchService {
     })))
   }
 
-  private async find(intent: Intent, signal: AbortSignal): Promise<{ items: SearchItem[]; sources: SearchSource[]; fallbackReason?: string }> {
-    const found = await this.plugin.query(intent, this.settings.everythingEnabled(), signal)
-    if (intent.kind === 'find_file') return { ...found, items: found.candidates }
-    const needle = normalizeName(intent.query)
-    const saved = await Promise.all(this.settings.savedApplications().filter(({ name }) => normalizeName(name).includes(needle))
+  private async find(plan: SearchPlan, verificationName: string | undefined, signal: AbortSignal):
+    Promise<Omit<PluginResult, 'candidates'> & { items: SearchItem[] }> {
+    const found = await this.plugin.query(plan, verificationName, this.settings.everythingEnabled(), signal)
+    if (plan.scope === 'files' || plan.extension || plan.directory || plan.modified) return { ...found, items: found.candidates }
+    const terms = plan.terms.map(normalizeName)
+    const verified = verificationName ? normalizeName(verificationName) : ''
+    const saved = await Promise.all(this.settings.savedApplications()
+      .filter(({ name, aliases }) => [name, ...aliases ?? []].some((value) =>
+        terms.some((term) => normalizeName(value).includes(term))))
       .map(async (item): Promise<SearchItem> => {
         const exists = await accessibleEntry(item.path)
+        const verifiedName = !!verified && [item.name, ...item.aliases ?? []].some((value) => normalizeName(value) === verified)
         return {
           kind: 'app', title: item.name, detail: item.path, target: item.path, launch: 'path',
-          canOpen: exists, missing: !exists, savedId: item.id, exact: needle === normalizeName(item.name), source: 'saved-apps',
+          canOpen: exists, missing: !exists, savedId: item.id, verifiedName, source: 'saved-apps',
         }
       }))
-    const paths = new Set(saved.map(({ target }) => target.toLowerCase()))
+    const unique = new Map<string, SearchItem>()
+    for (const item of [...saved, ...found.candidates]) {
+      const key = item.target.toLowerCase()
+      const previous = unique.get(key)
+      unique.set(key, previous ? { ...previous, verifiedName: previous.verifiedName || item.verifiedName } : item)
+    }
     return {
-      items: [...saved, ...found.candidates.filter(({ target }) => !paths.has(target.toLowerCase()))],
-      fallbackReason: found.fallbackReason,
+      items: [...unique.values()],
+      complete: found.complete, fallbackReason: found.fallbackReason,
       sources: saved.length ? [...found.sources, 'saved-apps' as const] : found.sources,
     }
   }
 
-  private async act(entry: SearchItem, action: 'open' | 'reveal' | 'add'): Promise<ActionResponse> {
+  private async act(entry: SearchItem, action: 'open' | 'reveal' | 'add', allowedNow: () => boolean): Promise<ActionResponse> {
     try {
       if (entry.launch === 'aumid') {
         if (action !== 'open') return { ok: false, message: '此操作不适用于该结果。' }
+        if (!allowedNow()) return { ok: false, message: '打开请求已取消。' }
         await launchApplication(entry.target)
         return { ok: true }
       }
       if (!await accessibleEntry(entry.target, entry.kind === 'folder')) {
         return { ok: false, message: '目标已移动、删除或不可访问。' }
       }
+      if (!allowedNow()) return { ok: false, message: '操作请求已取消。' }
       if (action === 'reveal') shell.showItemInFolder(entry.target)
       else if (action === 'add') {
         if (!entry.canAdd || classifyFile(entry.target) !== 'portable' || !/\.exe$/iu.test(entry.target)) {

@@ -1,6 +1,6 @@
 {
   "id": "quick-search",
-  "api": 2,
+  "api": 3,
   "name": "快速搜索",
   "icon": "folder-search",
   "compactPage": "search",
@@ -10,6 +10,14 @@
       "id": "settings",
       "title": "设置",
       "view": "settings",
+      "toggles": [
+        {
+          "id": "auto-open-unique-app",
+          "title": "自动打开唯一应用",
+          "description": "明确要求打开应用且只有一个已核实的结果时直接打开。关闭后，搜索结果由你选择。",
+          "default": true
+        }
+      ],
       "collections": [{ "id": "saved-apps", "title": "已添加应用", "view": "saved-applications" }],
       "services": [
         {

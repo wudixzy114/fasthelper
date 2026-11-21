@@ -23,7 +23,7 @@ export function classifyFile(filename: string): SearchKind {
   if (!['.exe', '.lnk'].includes(ext)) return 'file'
   if (/(unins\d*|uninstall|卸载)/iu.test(name)) return 'uninstaller'
   if (/(setup|installer|安装包)/iu.test(name)) return 'installer'
-  if (/(helper|updater|update|repair|crashpad|crashreport|redist|agent|service|辅助)/iu.test(name)) return 'helper'
+  if (/(helper|updater|update|repair|crashpad|crashreport|redist|agent|service|trainer|辅助|修改器)/iu.test(name)) return 'helper'
   return 'portable'
 }
 

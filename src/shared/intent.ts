@@ -19,16 +19,3 @@ export function readIntent(text: string): Intent {
   }
   return { kind: 'search', query: clean, explicit: false }
 }
-
-export type FileQuery = { name: string; after?: string; before?: string }
-
-export function toFileQuery(query: string, now = new Date()): FileQuery {
-  const name = query.replace(/^上周(?:的)?\s*/u, '').trim()
-  if (name === query) return { name }
-
-  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7))
-  const previousMonday = new Date(monday)
-  previousMonday.setDate(monday.getDate() - 7)
-  return { name, after: previousMonday.toISOString(), before: monday.toISOString() }
-}
